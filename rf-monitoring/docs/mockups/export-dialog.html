@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Export Dialog · Mockup</title>
+<link rel="stylesheet" href="assets/tokens.css">
+<link rel="stylesheet" href="assets/components.css">
+<style>
+  .dialog.inline { position: static; transform: none; width: auto; max-height: none; box-shadow: var(--shadow-1); }
+  .ex-layout { display: grid; grid-template-columns: minmax(420px, 620px) minmax(360px, 1fr); gap: var(--sp-5); align-items: start; padding: var(--sp-2) var(--sp-5) var(--sp-6); }
+  .size-bar { height: 8px; border-radius: 4px; background: var(--surface-sunken); overflow: hidden; display: flex; }
+  .size-bar i { display: block; height: 100%; }
+  .fname { font-family: var(--font-mono); font-size: var(--fs-sm); width: 100%; }
+  .embed-list { margin: 0; padding-left: 18px; color: var(--text-muted); font-size: var(--fs-md); display: grid; gap: 4px; }
+  @media (max-width: 1180px) { .ex-layout { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<script src="assets/catalog-data.js"></script>
+<script src="assets/shared.js"></script>
+<script>
+(function () {
+  var esc = RFV.esc, icon = RFV.icon, S = CATALOG;
+  var VIEWS = {
+    "services-tree": { title: "Business Services", slug: "business-services-tree", back: "services-tree.html", embed: [S.master.length + " categories and " + S.report.totals.services + " services with descriptions", "Per-service badges (job count, unmonitored, highest severity)", "Jobs for the click-a-service drawer (filtered set)"] },
+    "service-jobs-tree": { title: "Service → Jobs", slug: "service-jobs-tree", back: "service-jobs-tree.html", embed: ["Jobs in the chosen scope, with alerts and every drawer attribute", "System, severity and region dictionaries", "Current expanded or collapsed nodes"] },
+    "calendar": { title: "Job calendar", slug: "job-calendar", back: "calendar.html", embed: ["Filtered jobs with schedules (sets, not occurrences)", "The schedule engine: months are computed in the browser", "Unscheduled list, legend and colour-by setting"] },
+    "explorer": { title: "Jobs Explorer", slug: "jobs-explorer", back: "jobs-explorer.html", embed: ["All visible columns for the filtered rows", "Sort order and column visibility", "Search, filter and sort work offline"] },
+    "gaps": { title: "Gaps & Data Quality", slug: "gaps-data-quality", back: "gaps.html", embed: ["Six gap sections with their job rows", "Mapping suggestions shown read-only (no saving)", "Counts as of generation time"] }
+  };
+  var v = RFV.qs("view"); if (!VIEWS[v]) v = "calendar";
+  var V = VIEWS[v];
+  var view = RFV.shell({ page: "", title: "Export as HTML", sub: "Dialog states for each view, plus the header every exported file carries" });
+
+  var st = { data: "filters", scope: "category", from: "2026-10", to: "2026-10", theme: "system", expand: "shown", huge: false };
+  var months = []; for (var i = 0; i < 18; i++) { var d = new Date(Date.UTC(2026, 9 + i, 1)); months.push(d.toISOString().slice(0, 7)); }
+  function monName(k) { var p = k.split("-"); return new Date(Date.UTC(+p[0], +p[1] - 1, 1)).toLocaleDateString("en-GB", { month: "short", year: "numeric", timeZone: "UTC" }); }
+
+  view.innerHTML =
+    '<div class="toolbar" style="padding:0 var(--sp-5) var(--sp-3)"><span class="faint" style="font-size:var(--fs-sm)">Dialog for:</span><span class="btn-group">' +
+      Object.keys(VIEWS).map(function (k) { return '<a class="btn btn-sm" href="export-dialog.html?view=' + k + '" aria-pressed="' + (k === v) + '">' + esc(VIEWS[k].title) + "</a>"; }).join("") +
+    '</span><span style="flex:1"></span><label class="check"><input type="checkbox" id="huge"> Simulate a 10k-job catalog</label></div>' +
+    '<div class="ex-layout">' +
+      '<section class="dialog inline" role="dialog" aria-labelledby="dlg-title">' +
+        '<header><h2 id="dlg-title">Export "' + esc(V.title) + '" as HTML</h2><a class="btn btn-ghost btn-icon" href="' + V.back + '" aria-label="Close">' + icon("x") + "</a></header>" +
+        '<div class="dbody" id="dbody"></div>' +
+        '<footer><a class="btn" href="' + V.back + '">Cancel</a><button class="btn btn-primary" id="go">' + icon("download", "i-sm") + "Export</button></footer>" +
+      "</section>" +
+      '<div style="display:grid;gap:var(--sp-4)">' +
+        '<div><div class="faint" style="font-size:var(--fs-xs);text-transform:uppercase;letter-spacing:.06em;font-weight:700;margin-bottom:6px">Exported file: header preview (ExportHeader)</div><div id="hdr"></div></div>' +
+        '<div class="panel"><div style="font-weight:600;margin-bottom:6px">What gets embedded</div><ul class="embed-list">' + V.embed.map(function (e) { return "<li>" + esc(e) + "</li>"; }).join("") +
+          "<li>The view state (filters, selection, theme) as JSON, read with <code>JSON.parse</code></li><li>The prebuilt runtime (about 480 KB): same React components as the app, run read-only</li></ul>" +
+          '<div style="font-weight:600;margin:12px 0 6px">Guarantees</div><ul class="embed-list"><li>One file that works by double-click (<code>file://</code>) in Chrome, Edge, Safari and Firefox</li><li>A CSP <code>default-src \'none\'</code> means the browser itself blocks any network request</li><li>All workbook text escaped; no eval; no inline handlers built from data</li><li>Print / Save as PDF uses the print stylesheet (outline trees, landscape calendar, legend)</li></ul></div>' +
+      "</div>" +
+    "</div>";
+
+  function fileName() {
+    var date = S.meta.today, scope = "";
+    if (v === "service-jobs-tree") scope = st.data === "all" && st.scope === "all" ? "All-services_" : st.scope === "service" ? "Profile-and-Account-Maintenance_" : st.scope === "category" ? "Customer-Management_" : "All-services_";
+    if (v === "calendar") return V.slug + "_" + (st.data === "filters" ? "AU_" : "All-regions_") + st.from + (st.to !== st.from ? "_to_" + st.to : "") + ".html";
+    return V.slug + "_" + scope + date + ".html";
+  }
+  function filtersText() {
+    if (st.data === "all") return "None (all data)";
+    if (v === "calendar") return "State: Enabled · Region: AU · Colour by: severity";
+    if (v === "service-jobs-tree") return "State: Enabled · System: Hybris, Mule · Show unmapped: on";
+    if (v === "explorer") return "Search: \"sync\" · State: Enabled";
+    if (v === "gaps") return "None";
+    return "Search: \"renew\" · Expanded: Customer Management";
+  }
+  function title() {
+    if (v === "service-jobs-tree") return "Service → Jobs: " + (st.scope === "service" ? "Profile and Account Maintenance" : st.scope === "category" ? "Customer Management" : "All services");
+    if (v === "calendar") return "Job calendar: " + monName(st.from) + (st.to !== st.from ? " – " + monName(st.to) : "");
+    return V.title;
+  }
+  // Job counts for the example filters shown in filtersText(), computed from the real catalog
+  function countJobs() {
+    var J = S.jobs, en = function (j) { return st.data === "all" || j.state === "Enabled"; };
+    if (v === "service-jobs-tree") return J.filter(function (j) {
+      var inScope = st.scope === "all" || (st.scope === "category" ? j.place.cat === "Customer Management" : j.place.cat === "Customer Management" && j.place.svc === "Profile and Account Maintenance");
+      return inScope && en(j) && (st.data === "all" || j.sys === "hybris" || j.sys === "mule");
+    }).length;
+    if (v === "calendar") return J.filter(function (j) { return en(j) && (st.data === "all" || RFV.regionsOf(j).indexOf("AU") >= 0); }).length;
+    if (v === "explorer") return J.filter(function (j) { return st.data === "all" || (en(j) && /sync/i.test(j.name)); }).length;
+    return J.length;
+  }
+  function radios(name, opts, cur) {
+    return '<div class="radios">' + opts.map(function (o) { return '<label class="radio"><input type="radio" name="' + name + '" value="' + o[0] + '"' + (o[0] === cur ? " checked" : "") + "><span>" + o[1] + (o[2] ? "<small>" + o[2] + "</small>" : "") + "</span></label>"; }).join("") + "</div>";
+  }
+  function render() {
+    var jobs = st.huge ? (st.data === "all" ? 10000 : 2400) : countJobs();
+    var nMonths = months.indexOf(st.to) - months.indexOf(st.from) + 1;
+    var runtimeKB = 480, dataKB = Math.round(jobs * 0.95 + (v === "calendar" ? nMonths * 2 : 0)), total = runtimeKB + dataKB;
+    var big = total > 5000, badRange = v === "calendar" && (nMonths < 1 || nMonths > 12);
+    var html = "";
+    if (v === "service-jobs-tree") html += '<div class="field"><span class="flabel">Scope</span>' + radios("scope", [["service", "Selected service", "Profile and Account Maintenance"], ["category", "Selected category", "Customer Management"], ["all", "All services", "Every category"]], st.scope) + "</div>";
+    html += '<div class="field"><span class="flabel">Data</span>' + radios("data", [["filters", "Current filters", filtersText()], ["all", "All data", "Ignore filters; keep the scope"]], st.data) + "</div>";
+    if (v === "calendar") {
+      html += '<div class="field"><span class="flabel">Month range</span><div style="display:flex;gap:8px;align-items:center">' +
+        '<select class="select" id="from">' + months.map(function (m) { return '<option value="' + m + '"' + (m === st.from ? " selected" : "") + ">" + monName(m) + "</option>"; }).join("") + "</select><span>to</span>" +
+        '<select class="select" id="to">' + months.map(function (m) { return '<option value="' + m + '"' + (m === st.to ? " selected" : "") + ">" + monName(m) + "</option>"; }).join("") + "</select>" +
+        '<span class="faint" style="font-size:var(--fs-sm)">' + (nMonths > 0 ? nMonths + " month" + (nMonths > 1 ? "s" : "") : "") + " · max 12</span></div>" +
+        (badRange ? '<div class="notice warn" style="margin-top:6px">' + icon("warn", "i-sm") + "<span>Choose between 1 and 12 months.</span></div>" : '<div class="faint" style="font-size:var(--fs-sm);margin-top:4px">Month navigation in the exported file stops at the ends of this range. The day drill-down works for every day in it.</div>') + "</div>";
+    }
+    if (v === "services-tree" || v === "service-jobs-tree") html += '<div class="field"><span class="flabel">Tree nodes</span>' + radios("expand", [["shown", "As currently shown", "Keeps expanded and collapsed state"], ["all", "Expand all", "Best for printing"]], st.expand) + "</div>";
+    html += '<div class="field"><span class="flabel">Theme</span>' + radios("theme", [["light", "Light"], ["dark", "Dark"], ["system", "Follow system", "Viewer's OS setting"]], st.theme) + "</div>";
+    html += '<div class="field"><span class="flabel">File name</span><input class="input fname" value="' + esc(fileName()) + '" aria-label="File name"></div>';
+    html += '<div class="field"><span class="flabel">Estimated size: ' + (total >= 1000 ? (total / 1000).toFixed(1) + " MB" : total + " KB") + '</span><div class="size-bar" aria-hidden="true"><i style="width:' + Math.min(100, runtimeKB / Math.max(total, 5000) * 100) + '%;background:var(--accent)"></i><i style="width:' + Math.min(100, dataKB / Math.max(total, 5000) * 100) + '%;background:' + (big ? "var(--warn)" : "var(--ok)") + '"></i></div>' +
+      '<div class="faint" style="font-size:var(--fs-sm);margin-top:4px">Runtime ' + runtimeKB + " KB · data " + (dataKB >= 1000 ? (dataKB / 1000).toFixed(1) + " MB" : dataKB + " KB") + " (" + jobs.toLocaleString("en-US") + " jobs)</div>" +
+      (big ? '<div class="notice warn" style="margin-top:6px">' + icon("warn", "i-sm") + "<span>This export is larger than 5 MB. It will still work, but it's slower to open and share. Use <strong>Current filters</strong>" + (v === "calendar" ? " or a shorter range" : "") + " to make it smaller.</span></div>"
+        : '<div class="notice ok" style="margin-top:6px">' + icon("check", "i-sm") + "<span>Under the 5 MB target.</span></div>") + "</div>";
+    document.getElementById("dbody").innerHTML = html;
+    document.getElementById("go").disabled = badRange;
+    document.getElementById("hdr").innerHTML =
+      '<div class="export-header"><span class="ro tag tag-info">Read-only export</span><h1>' + esc(title()) + "</h1><dl>" +
+      "<dt>Source</dt><dd>" + esc(S.meta.workbook) + " (modified " + esc(S.meta.modified) + ")</dd>" +
+      "<dt>Generated</dt><dd>" + esc(S.meta.loadedAt) + " · " + (v === "calendar" ? "times in " + esc(RFV.tzLabel(RFV.tz())) : "America/Los_Angeles") + "</dd>" +
+      "<dt>Filters</dt><dd>" + esc(filtersText()) + "</dd>" +
+      "<dt>Version</dt><dd>Service–Job Catalog Viewer v" + esc(S.meta.version) + "</dd></dl></div>" +
+      '<div class="faint mono" style="font-size:var(--fs-xs);margin-top:6px">&lt;title&gt;' + esc(title()) + " · " + esc(S.meta.workbook) + "&lt;/title&gt;</div>";
+    var fr = document.getElementById("from"), to = document.getElementById("to");
+    if (fr) fr.addEventListener("change", function (e) { st.from = e.target.value; if (months.indexOf(st.to) < months.indexOf(st.from)) st.to = st.from; render(); });
+    if (to) to.addEventListener("change", function (e) { st.to = e.target.value; render(); });
+  }
+  document.getElementById("dbody").addEventListener("change", function (e) {
+    if (e.target.type === "radio") { st[e.target.name] = e.target.value; render(); }
+  });
+  document.getElementById("huge").addEventListener("change", function (e) { st.huge = e.target.checked; render(); });
+  document.getElementById("go").addEventListener("click", function () {
+    RFV.openPanel("Export (simulated)", '<span class="tag tag-ok">exportView("' + v + '", data, state, options)</span>',
+      '<p>In the app, this calls the pure <code>exportView()</code> function from <code>packages/exporter</code> and downloads:</p><p class="raw">' + esc(fileName()) + "</p>" +
+      '<p class="muted">The CLI produces the same file headlessly:</p><p class="raw">npm run export -- --view ' + v + (v === "calendar" ? " --months " + st.from + ".." + st.to : "") + " --out exports/</p>");
+  });
+  render();
+})();
+</script>
+</body>
+</html>

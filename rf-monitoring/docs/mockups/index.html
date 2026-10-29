@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Catalog Viewer Mockups</title>
+<link rel="stylesheet" href="assets/tokens.css">
+<link rel="stylesheet" href="assets/components.css">
+</head>
+<body>
+<div class="idx">
+  <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px">
+    <span class="brand-mark" style="width:32px;height:32px;border-radius:8px;display:grid;place-items:center;background:var(--accent);color:var(--text-on-accent)">
+      <svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+    </span>
+    <span class="faint" style="font-weight:600">Design review · 29 Oct 2026</span>
+    <span style="flex:1"></span>
+    <button class="btn" id="theme-btn" type="button">Theme: <span id="theme-lbl">System</span></button>
+  </div>
+  <h1>Service–Job Catalog Viewer: UI mockups</h1>
+  <p class="lead">
+    Clickable mockups of every page in <a href="../DESIGN.md">DESIGN.md</a> §14. They follow the same rules as the real
+    HTML exports: they open by double-click, work offline, and need no server or CDN. Colours, spacing and component anatomy come from
+    the shared <code>assets/tokens.css</code> and <code>assets/components.css</code>, which become the app's theme in M1.
+    <strong>The data is the real workbook</strong>: every job row from every visible job tab and every master category and service,
+    parsed with the rules in DESIGN.md §8–§10 by <code>scripts/build-mockup-data.mjs</code>. Pages can be checked against the sheet
+    for layout <em>and</em> for data. Every job's drawer shows its sheet and row number.
+    <span id="stamp"></span>
+  </p>
+
+  <div class="idx-grid">
+    <a class="idx-card" href="load-workbook.html">
+      <span class="eyebrow">Supporting · §14.2</span>
+      <h2>Load workbook</h2>
+      <p>Drop zone, remembered path and reload, parse report.</p>
+      <ul><li>Tabs found and skipped (hidden / not jobs)</li><li>Merged ranges expanded per tab</li><li>Frequency results by confidence and rule</li></ul>
+    </a>
+    <a class="idx-card" href="services-tree.html">
+      <span class="eyebrow">View 1 · §14.3</span>
+      <h2>Business Services tree</h2>
+      <p>Wrapped compact org chart with every master category and service.</p>
+      <ul><li>Try: search "renew", Expand all, Fit, zoom with the scroll wheel, drag to pan</li><li>Switch Layout: Wrapped ↔ Fan-out</li><li>Click a service to open its job drawer (export behaviour)</li></ul>
+    </a>
+    <a class="idx-card" href="service-jobs-tree.html">
+      <span class="eyebrow">View 2 · §14.4</span>
+      <h2>Service → Jobs tree</h2>
+      <p>Category → Service → System → job tiles, with the full detail drawer.</p>
+      <ul><li>Try: change Scope, toggle Group by system / Show unmapped</li><li>Filter by System or Monitored</li><li>Click any tile to see every attribute</li></ul>
+    </a>
+    <a class="idx-card" href="calendar.html">
+      <span class="eyebrow">View 3 · §14.5</span>
+      <h2>Monthly job calendar</h2>
+      <p>One line per job per day, ×N run counts, markers that make different days stand out, and the day drill-down.</p>
+      <ul><li>Try: day 1 and day 6 of a month (monthly jobs), "Only non-daily", colour by System</li><li>Change the display timezone in the top bar</li><li>Click a day to open the 24-hour timeline</li></ul>
+    </a>
+    <a class="idx-card" href="jobs-explorer.html">
+      <span class="eyebrow">Supporting · §14.6</span>
+      <h2>Jobs Explorer</h2>
+      <p>One table of all jobs: search, multi-filter, sort, show and hide columns.</p>
+    </a>
+    <a class="idx-card" href="gaps.html">
+      <span class="eyebrow">Supporting · §14.7</span>
+      <h2>Gaps &amp; Data Quality</h2>
+      <p>Six gap sections plus the mapping helper (suggested → confirm).</p>
+    </a>
+    <a class="idx-card" href="export-dialog.html?view=calendar">
+      <span class="eyebrow">Export · §15.4–15.5</span>
+      <h2>Export dialog &amp; exported header</h2>
+      <p>Options per view, size estimate and warning, file name preview, and the header every export carries.</p>
+    </a>
+  </div>
+
+  <div class="section">
+    <h2>Severity and system encoding (§13.3)</h2>
+    <div class="panel swatches" id="swatches"></div>
+  </div>
+  <div class="section">
+    <h2>What to give feedback on</h2>
+    <div class="panel">
+      <ol style="margin:0;padding-left:20px;display:grid;gap:6px">
+        <li>View 1 layout: does the wrapped org chart work for you, or would you rather have the fan-out?</li>
+        <li>Job tile content: is anything missing or unnecessary for day-to-day use?</li>
+        <li>Calendar: do the load shade, ◆ non-daily and ≋ Sev1-cluster markers help you spot what's different? Is top-4 per cell right?</li>
+        <li>Unmapped / Unassigned placement and the mapping helper flow.</li>
+        <li>Colours: severity palette and system chip colours (both are configurable).</li>
+      </ol>
+    </div>
+  </div>
+</div>
+<script src="assets/catalog-data.js"></script>
+<script src="assets/shared.js"></script>
+<script>
+(function () {
+  var t = RFV.store("rfv-theme") || "system";
+  document.getElementById("theme-lbl").textContent = t[0].toUpperCase() + t.slice(1);
+  document.getElementById("theme-btn").addEventListener("click", RFV.cycleTheme);
+  var html = RFV.SEVS.map(RFV.sevBadge).join("") + '<span style="width:16px"></span>' +
+    Object.keys(CATALOG.systems).map(function (k) { return RFV.sysChip(k); }).join("") +
+    RFV.sysChip("bi", "Airflow") + '<span style="width:16px"></span>' +
+    RFV.stateTag("Enabled") + RFV.stateTag("Disabled") + RFV.monFlag(true) + RFV.monFlag(false) + RFV.monFlag(null) +
+    RFV.linkTag("exact") + RFV.linkTag("suggested") + RFV.linkTag("unmatched");
+  document.getElementById("swatches").innerHTML = html;
+  var M = CATALOG.meta, T = CATALOG.report.totals;
+  document.getElementById("stamp").innerHTML = "<br><br><strong>Loaded:</strong> " + RFV.esc(M.workbook) + " (modified " + RFV.esc(M.modified) + ") · " +
+    T.jobs + " jobs from " + T.jobTabs + " job tabs · " + T.categories + " categories · " + T.services + " services · generated " + RFV.esc(M.loadedAt) +
+    ". Hidden tabs are skipped by design and listed on the Load workbook page.";
+})();
+</script>
+</body>
+</html>

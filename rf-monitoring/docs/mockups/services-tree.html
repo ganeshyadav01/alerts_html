@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Business Services Tree · Mockup</title>
+<link rel="stylesheet" href="assets/tokens.css">
+<link rel="stylesheet" href="assets/components.css">
+<style>
+  .tree-toolbar { padding: var(--sp-2) var(--sp-5); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); background: var(--surface); }
+  .hint-float { position: absolute; right: 12px; bottom: 10px; font-size: var(--fs-xs); color: var(--text-faint); background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 4px 8px; pointer-events: none; }
+  .print-outline ul { margin: 2px 0 6px 18px; padding: 0; }
+  .print-outline > ul > li { break-inside: avoid; margin-bottom: 6px; }
+</style>
+</head>
+<body>
+<script src="assets/catalog-data.js"></script>
+<script src="assets/shared.js"></script>
+<script>
+(function () {
+  var esc = RFV.esc, icon = RFV.icon, S = CATALOG;
+
+  /* ── Model: Root → Category → Service (+ Unassigned, + Unmapped) ─ */
+  var cats = S.master.map(function (c) {
+    var children = c[1].map(function (s) {
+      var jobs = S.jobs.filter(function (j) { return j.place.cat === c[0] && j.place.svc === s[0]; });
+      return { kind: "svc", name: s[0], desc: s[1], jobs: jobs };
+    });
+    var unassigned = S.jobs.filter(function (j) { return j.place.cat === c[0] && !j.place.svc; });
+    if (unassigned.length) children.push({ kind: "svc", name: "Unassigned service", desc: "Category matched, but Business Service is blank or not in the master tab.", jobs: unassigned, dashed: true });
+    return { kind: "cat", name: c[0], children: children };
+  });
+  var unm = {}, unmOrder = [];
+  S.jobs.filter(function (j) { return !j.place.cat; }).forEach(function (j) {
+    var k = j.catRaw ? j.catRaw.trim() : "(blank category)";
+    if (!unm[k]) { unm[k] = []; unmOrder.push(k); }
+    unm[k].push(j);
+  });
+  cats.push({ kind: "cat", name: "Unmapped", dashed: true, children: unmOrder.map(function (k) {
+    return { kind: "svc", name: k === "(blank category)" ? k : 'Unknown category "' + k + '"', desc: "Not found in the master tab. Map it on the Gaps page.", jobs: unm[k], dashed: true };
+  }) });
+  cats.forEach(function (c) { c.jobs = [].concat.apply([], c.children.map(function (s) { return s.jobs; })); });
+  var totalSvcs = S.master.reduce(function (n, c) { return n + c[1].length; }, 0);
+
+  var view = RFV.shell({ page: "services-tree.html", exportView: "services-tree", title: "Business Services",
+    sub: S.master.length + " categories · " + totalSvcs + " services · " + S.jobs.length + " jobs" });
+
+  /* ── State ─────────────────────────────────────────────── */
+  var st = { expanded: new Set(["Customer Management", "Commissions and Incentives", "Unmapped"]), layout: "wrapped", k: 1, tx: 0, ty: 0, q: "", hits: [], hit: -1 };
+
+  view.innerHTML =
+    '<div class="tree-toolbar toolbar">' +
+      '<label class="search">' + icon("search") + '<span class="sr-only">Search services</span><input class="input" id="q" placeholder="Search categories, services, descriptions…" autocomplete="off"></label>' +
+      '<span class="faint" id="hitinfo" style="font-size:var(--fs-sm);min-width:70px"></span>' +
+      '<span class="sep"></span>' +
+      '<button class="btn" id="expand">' + icon("expand", "i-sm") + 'Expand all</button>' +
+      '<button class="btn" id="collapse">' + icon("collapse", "i-sm") + 'Collapse all</button>' +
+      '<span class="sep"></span>' +
+      '<button class="btn btn-icon" id="zout" aria-label="Zoom out">' + icon("minus", "i-sm") + '</button><span class="zoom-label" id="zl">100%</span><button class="btn btn-icon" id="zin" aria-label="Zoom in">' + icon("plus", "i-sm") + "</button>" +
+      '<button class="btn" id="fit">' + icon("fit", "i-sm") + 'Fit</button>' +
+      '<span class="sep"></span><span class="faint" style="font-size:var(--fs-sm)">Layout</span>' +
+      '<span class="btn-group" role="group" aria-label="Layout"><button class="btn" data-layout="wrapped" aria-pressed="true">Wrapped rows</button><button class="btn" data-layout="fan" aria-pressed="false">Fan-out</button></span>' +
+      '<span style="flex:1"></span><button class="btn btn-ghost" onclick="window.print()">' + icon("printer", "i-sm") + 'Print</button>' +
+    "</div>" +
+    '<div class="tree-wrap" id="wrap"><div class="tree-canvas" id="canvas"></div><div class="hint-float">Scroll to zoom · drag to pan · click a category to expand · click a service for its jobs</div></div>' +
+    '<div class="print-only print-outline" id="outline"></div>';
+
+  var wrap = document.getElementById("wrap"), canvas = document.getElementById("canvas");
+
+  /* ── Layout: wrapped compact org chart (DESIGN.md §14.3) ── */
+  var PAD = 48, ROOT_W = 280, ROOT_H = 58, CAT_W = 236, CAT_H = 62, SVC_W = 220, SVC_H = 78, COL_GAP = 26, SVC_GAP = 10, INDENT = 16, BUS = 26, ROW_GAP = 54;
+  function layout() {
+    var per = st.layout === "wrapped" ? 6 : cats.length;
+    var cols = Math.min(per, cats.length), totalW = cols * (CAT_W + COL_GAP) - COL_GAP;
+    var nodes = [], links = [];
+    var root = { x: PAD + (totalW - ROOT_W) / 2, y: PAD, w: ROOT_W, h: ROOT_H };
+    var rootCx = root.x + ROOT_W / 2, rootB = root.y + ROOT_H;
+    var y = rootB + BUS * 2, firstBus = null;
+    for (var r = 0; r * per < cats.length; r++) {
+      var row = cats.slice(r * per, r * per + per), rowH = 0, busY = y - BUS;
+      if (firstBus == null) firstBus = busY;
+      row.forEach(function (c, i) {
+        var x = PAD + i * (CAT_W + COL_GAP), open = st.expanded.has(c.name);
+        nodes.push({ t: "cat", c: c, x: x, y: y, w: CAT_W, h: CAT_H, open: open });
+        var cx = x + CAT_W / 2;
+        links.push(r === 0 ? "M" + rootCx + " " + rootB + "V" + busY + "H" + cx + "V" + y
+          : "M" + rootCx + " " + rootB + "V" + firstBus + "H" + (PAD - 22) + "V" + busY + "H" + cx + "V" + y);
+        var h = CAT_H;
+        if (open) c.children.forEach(function (s, k) {
+          var sy = y + CAT_H + SVC_GAP + k * (SVC_H + SVC_GAP);
+          nodes.push({ t: "svc", s: s, c: c, x: x + INDENT, y: sy, w: SVC_W, h: SVC_H });
+          links.push("M" + (x + 9) + " " + (y + CAT_H) + "V" + (sy + SVC_H / 2) + "H" + (x + INDENT));
+          h = sy + SVC_H - y;
+        });
+        rowH = Math.max(rowH, h);
+      });
+      y += rowH + ROW_GAP + BUS;
+    }
+    return { root: root, nodes: nodes, links: links, w: totalW + PAD * 2, h: y + PAD };
+  }
+
+  function catHtml(n) {
+    var c = n.c, unassigned = c.children.filter(function (s) { return s.dashed; }).reduce(function (a, s) { return a + s.jobs.length; }, 0);
+    var ms = RFV.maxSev(c.jobs);
+    return '<div class="node cat' + (c.dashed ? " dashed" : "") + (n.open ? "" : " collapsed") + '" role="button" tabindex="0" aria-expanded="' + n.open + '" data-cat="' + esc(c.name) + '" style="left:' + n.x + "px;top:" + n.y + "px;width:" + n.w + "px;height:" + n.h + 'px">' +
+      '<div class="title"><span class="caret">' + icon("chevDown", "i-sm") + "</span>" + (c.dashed ? icon("warn", "i-sm") : "") + '<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(c.name) + "</span></div>" +
+      '<div class="stats" style="display:flex;gap:6px;align-items:center">' + (c.dashed ? c.children.length + " raw values" : (c.children.length - (unassigned ? 1 : 0)) + " services") + " · " + c.jobs.length + " jobs" +
+      (ms ? '<span style="margin-left:auto">' + RFV.sevIcon(ms, "i-sm") + "</span>" : "") + "</div></div>";
+  }
+  function svcHtml(n) {
+    var s = n.s, unmon = s.jobs.filter(function (j) { return j.mon === false; }).length, ms = RFV.maxSev(s.jobs);
+    var cls = "node svc" + (s.jobs.length ? "" : " empty") + (s.dashed ? " dashed" : "");
+    return '<div class="' + cls + '" role="button" tabindex="0" data-svc="' + esc(s.name) + '" data-cat="' + esc(n.c.name) + '" title="' + esc(s.name + " · " + s.desc) + '" style="left:' + n.x + "px;top:" + n.y + "px;width:" + n.w + "px;height:" + n.h + 'px">' +
+      '<div class="title">' + esc(s.name) + '</div><div class="desc">' + esc(s.desc) + '</div><div class="badges">' +
+      '<span class="count-badge">' + s.jobs.length + " job" + (s.jobs.length === 1 ? "" : "s") + "</span>" +
+      (unmon ? '<span class="count-badge warn">' + icon("warn", "i-sm") + unmon + " unmon</span>" : "") +
+      (ms ? RFV.sevBadge(ms) : "") + "</div></div>";
+  }
+  function render() {
+    var L = layout();
+    canvas.style.width = L.w + "px"; canvas.style.height = L.h + "px";
+    canvas.innerHTML = '<svg class="tree-links" width="' + L.w + '" height="' + L.h + '"><path d="' + L.links.join("") + '"/></svg>' +
+      '<div class="node root" style="left:' + L.root.x + "px;top:" + L.root.y + "px;width:" + L.root.w + "px;height:" + L.root.h + 'px"><div style="font-weight:700">Business Services</div><div class="sub">' +
+      S.master.length + " categories · " + S.jobs.length + " jobs · " + cats[cats.length - 1].jobs.length + " unmapped</div></div>" +
+      L.nodes.map(function (n) { return n.t === "cat" ? catHtml(n) : svcHtml(n); }).join("");
+    applyHits();
+    applyTransform();
+    renderOutline();
+    st.lastLayout = L;
+  }
+  function applyTransform() {
+    canvas.style.transform = "translate(" + st.tx + "px," + st.ty + "px) scale(" + st.k + ")";
+    document.getElementById("zl").textContent = Math.round(st.k * 100) + "%";
+  }
+  function fit(widthOnly) {
+    var L = st.lastLayout, W = wrap.clientWidth, Hh = wrap.clientHeight;
+    st.k = Math.max(0.2, Math.min(1, W / L.w, widthOnly === true ? Infinity : Hh / L.h) * 0.98);
+    st.tx = (W - L.w * st.k) / 2; st.ty = 8; applyTransform();
+  }
+  function zoomAt(f, px, py) {
+    var k2 = Math.max(0.2, Math.min(2, st.k * f));
+    st.tx = px - (px - st.tx) * (k2 / st.k); st.ty = py - (py - st.ty) * (k2 / st.k); st.k = k2; applyTransform();
+  }
+
+  /* ── Search: highlight, auto-expand path, pan to match ──── */
+  function norm(s) { return (s || "").toLowerCase().replace(/\s+/g, " ").trim(); }
+  function search(q) {
+    st.q = norm(q); st.hits = []; st.hit = -1;
+    if (st.q) cats.forEach(function (c) {
+      if (norm(c.name).indexOf(st.q) >= 0) st.hits.push({ cat: c.name });
+      c.children.forEach(function (s) {
+        if (norm(s.name).indexOf(st.q) >= 0 || norm(s.desc).indexOf(st.q) >= 0) { st.hits.push({ cat: c.name, svc: s.name }); st.expanded.add(c.name); }
+      });
+    });
+    render();
+    if (st.hits.length) next();
+    document.getElementById("hitinfo").textContent = st.q ? (st.hits.length ? st.hits.length + " match" + (st.hits.length > 1 ? "es" : "") : "No matches") : "";
+  }
+  function sel(h) { return h.svc ? '.node.svc[data-cat="' + cssq(h.cat) + '"][data-svc="' + cssq(h.svc) + '"]' : '.node.cat[data-cat="' + cssq(h.cat) + '"]'; }
+  function cssq(s) { return s.replace(/["\\]/g, "\\$&"); }
+  function applyHits() {
+    if (!st.q) return;
+    RFV.$$(".node.cat, .node.svc", canvas).forEach(function (n) { n.classList.add("dim"); });
+    st.hits.forEach(function (h) { var el = RFV.$(sel(h), canvas); if (el) { el.classList.remove("dim"); el.classList.add("hit"); var p = RFV.$('.node.cat[data-cat="' + cssq(h.cat) + '"]', canvas); if (p) p.classList.remove("dim"); } });
+  }
+  function next() {
+    if (!st.hits.length) return;
+    st.hit = (st.hit + 1) % st.hits.length;
+    var el = RFV.$(sel(st.hits[st.hit]), canvas); if (!el) return;
+    var cx = el.offsetLeft + el.offsetWidth / 2, cy = el.offsetTop + el.offsetHeight / 2;
+    if (st.k < 0.7) st.k = 0.85;
+    st.tx = wrap.clientWidth / 2 - cx * st.k; st.ty = wrap.clientHeight / 2 - cy * st.k; applyTransform();
+    document.getElementById("hitinfo").textContent = (st.hit + 1) + " / " + st.hits.length;
+  }
+
+  /* ── Print outline (DESIGN.md §15.6) ─────────────────────── */
+  function renderOutline() {
+    document.getElementById("outline").innerHTML = '<div class="export-header"><h1>Business Services</h1><dl><dt>Source</dt><dd>' + esc(S.meta.workbook) + " (modified " + esc(S.meta.modified) + ")</dd><dt>Printed</dt><dd>" + esc(S.meta.loadedAt) + "</dd></dl></div><ul>" +
+      cats.map(function (c) { return "<li><strong>" + esc(c.name) + "</strong> · " + c.jobs.length + " jobs<ul>" + c.children.map(function (s) { return "<li>" + esc(s.name) + " · " + s.jobs.length + " jobs" + (s.jobs.length ? " · max " + RFV.maxSev(s.jobs) : "") + "</li>"; }).join("") + "</ul></li>"; }).join("") + "</ul>";
+  }
+
+  /* ── Service click → jobs drawer (export behaviour) ─────── */
+  function openService(catName, svcName) {
+    var c = cats.filter(function (x) { return x.name === catName; })[0];
+    var s = c && c.children.filter(function (x) { return x.name === svcName; })[0];
+    if (!s) return;
+    var body = '<p class="muted" style="font-size:var(--fs-md)">' + esc(s.desc) + "</p>" +
+      '<p class="notice warn" style="margin:8px 0">' + icon("info", "i-sm") + '<span>In the app this click opens <a href="service-jobs-tree.html">View 2</a> scoped to this service. In an exported file it opens this drawer.</span></p>' +
+      (s.jobs.length ? '<div class="joblist">' + s.jobs.map(RFV.jobTile).join("") + "</div>" : '<p class="unset">No jobs are linked to this service. It is listed on the Gaps page.</p>');
+    RFV.openPanel(esc(svcName), '<span class="tag">' + esc(catName) + '</span><span class="count-badge">' + s.jobs.length + (s.jobs.length === 1 ? " job" : " jobs") + "</span>" + (s.jobs.length ? RFV.sevBadge(RFV.maxSev(s.jobs)) : ""), body);
+  }
+
+  /* ── Events ────────────────────────────────────────────── */
+  canvas.addEventListener("click", function (e) {
+    var svc = e.target.closest(".node.svc");
+    if (svc) { openService(svc.getAttribute("data-cat"), svc.getAttribute("data-svc")); return; }
+    var cat = e.target.closest(".node.cat");
+    if (cat) { var n = cat.getAttribute("data-cat"); if (st.expanded.has(n)) st.expanded.delete(n); else st.expanded.add(n); render(); var again = RFV.$('.node.cat[data-cat="' + cssq(n) + '"]', canvas); if (again) again.focus({ preventScroll: true }); }
+  });
+  canvas.addEventListener("keydown", function (e) { if ((e.key === "Enter" || e.key === " ") && e.target.closest(".node")) { e.preventDefault(); e.target.click(); } });
+  document.getElementById("q").addEventListener("input", function (e) { search(e.target.value); });
+  document.getElementById("q").addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); next(); } });
+  document.getElementById("expand").addEventListener("click", function () { cats.forEach(function (c) { st.expanded.add(c.name); }); render(); fit(); });
+  document.getElementById("collapse").addEventListener("click", function () { st.expanded.clear(); render(); fit(); });
+  document.getElementById("zin").addEventListener("click", function () { zoomAt(1.2, wrap.clientWidth / 2, wrap.clientHeight / 2); });
+  document.getElementById("zout").addEventListener("click", function () { zoomAt(1 / 1.2, wrap.clientWidth / 2, wrap.clientHeight / 2); });
+  document.getElementById("fit").addEventListener("click", function () { fit(false); });
+  RFV.$$("[data-layout]").forEach(function (b) {
+    b.addEventListener("click", function () {
+      st.layout = b.getAttribute("data-layout");
+      RFV.$$("[data-layout]").forEach(function (x) { x.setAttribute("aria-pressed", String(x === b)); });
+      render(); fit();
+    });
+  });
+  wrap.addEventListener("wheel", function (e) { e.preventDefault(); var r = wrap.getBoundingClientRect(); zoomAt(Math.exp(-e.deltaY * 0.0015), e.clientX - r.left, e.clientY - r.top); }, { passive: false });
+  var drag = null;
+  wrap.addEventListener("pointerdown", function (e) { if (e.target.closest(".node")) return; drag = { x: e.clientX, y: e.clientY, tx: st.tx, ty: st.ty }; wrap.classList.add("dragging"); wrap.setPointerCapture(e.pointerId); });
+  wrap.addEventListener("pointermove", function (e) { if (!drag) return; st.tx = drag.tx + e.clientX - drag.x; st.ty = drag.ty + e.clientY - drag.y; applyTransform(); });
+  wrap.addEventListener("pointerup", function () { drag = null; wrap.classList.remove("dragging"); });
+
+  render();
+  fit(true);
+  var q0 = RFV.qs("q"); if (q0) { document.getElementById("q").value = q0; search(q0); }
+})();
+</script>
+</body>
+</html>

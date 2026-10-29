@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jobs Explorer · Mockup</title>
+<link rel="stylesheet" href="assets/tokens.css">
+<link rel="stylesheet" href="assets/components.css">
+<style>
+  .colmenu .menu { right: 0; left: auto; }
+  .colmenu .menu label { white-space: nowrap; }
+  th[aria-sort] .ar { opacity: 1; }
+  th .ar { opacity: .25; }
+</style>
+</head>
+<body>
+<script src="assets/catalog-data.js"></script>
+<script src="assets/shared.js"></script>
+<script>
+(function () {
+  var esc = RFV.esc, icon = RFV.icon, S = CATALOG;
+  var view = RFV.shell({ page: "jobs-explorer.html", exportView: "explorer", title: "Jobs Explorer", sub: "Every job across every tab" });
+
+  var COLS = [
+    { k: "name", l: "Job", v: function (j) { return j.name; }, h: function (j) { return "<strong>" + esc(j.name) + "</strong>"; } },
+    { k: "sys", l: "System", v: function (j) { return S.systems[j.sys].name + (j.sub || ""); }, h: function (j) { return RFV.sysChip(j.sys, j.sub); } },
+    { k: "cat", l: "Category", v: RFV.catName, h: function (j) { return j.place.cat ? esc(j.place.cat) : '<span style="color:var(--warn)">' + icon("warn", "i-sm") + " Unmapped</span>"; } },
+    { k: "svc", l: "Service", v: RFV.svcName, h: function (j) { return esc(RFV.svcName(j)); } },
+    { k: "link", l: "Link", v: function (j) { return j.status; }, h: function (j) { return RFV.linkTag(j.status); } },
+    { k: "region", l: "Region", v: function (j) { return j.region || ""; }, h: function (j) { return esc(j.region); } },
+    { k: "freq", l: "Frequency", v: function (j) { return j.human; }, h: function (j) { return RFV.freqLabel(j); } },
+    { k: "conf", l: "Confidence", v: function (j) { return j.conf; }, h: function (j) { return '<span class="tag ' + (j.conf === "parsed" ? "tag-ok" : j.conf === "assumed" ? "tag-warn" : "tag-danger") + '">' + j.conf + "</span>"; } },
+    { k: "state", l: "State", v: function (j) { return j.state; }, h: function (j) { return RFV.stateTag(j.state); } },
+    { k: "mon", l: "Monitored", v: function (j) { return String(j.mon); }, h: function (j) { return RFV.monFlag(j.mon, true); } },
+    { k: "sev", l: "Severity", v: function (j) { return RFV.SEV_ORDER[j.sev]; }, h: function (j) { return RFV.sevBadge(j.sev); } },
+    { k: "alerts", l: "Alerts", v: function (j) { return j.alerts.length; }, h: function (j) { return j.alerts.length ? String(j.alerts.length) : '<span class="unset">0</span>'; } },
+    { k: "sla", l: "SLA", v: function (j) { return j.sla || ""; }, h: function (j) { return j.sla ? esc(j.sla) : '<span class="unset">—</span>'; } },
+    { k: "l1", l: "L1", v: function (j) { return j.l1 || ""; }, h: function (j) { return j.l1 ? esc(j.l1) : '<span class="unset">—</span>'; } },
+    { k: "l2", l: "L2", v: function (j) { return j.l2 || ""; }, h: function (j) { return j.l2 ? esc(j.l2) : '<span class="unset">—</span>'; } },
+    { k: "raw", l: "Raw frequency", v: function (j) { return j.freq; }, h: function (j) { return '<span class="mono faint">' + esc(j.freq) + "</span>"; }, hidden: true },
+    { k: "tab", l: "Sheet / row", v: function (j) { return j.tab + String(j.row).padStart(4, "0"); }, h: function (j) { return '<span class="faint">' + esc(j.tab) + " r" + j.row + "</span>"; } }
+  ];
+  // Every remaining field and every extra sheet column, available through Columns (hidden by default)
+  var txt = function (f) { return function (j) { return j[f] || ""; }; };
+  var cell = function (f, mono) { return function (j) { return j[f] ? (mono ? '<span class="mono">' : "<span>") + esc(j[f]) + "</span>" : '<span class="unset">—</span>'; }; };
+  [["desc", "Description"], ["catRaw", "Category (sheet)"], ["svcRaw", "Service (sheet)"], ["alertsRaw", "Alert Name (sheet)", true], ["alertFreq", "Alert frequency"],
+   ["owner", "R+F stakeholder"], ["sysImpact", "System impact"], ["bizImpact", "Business impact"], ["group", "Impacted user group"],
+   ["stateRaw", "State (sheet)"], ["monRaw", "Monitored (sheet)"], ["sevRaw", "Severity (sheet)"], ["cronCol", "Cron column", true], ["textHuman", "Text reads as"], ["conflict", "Text vs cron conflict"], ["rule", "Grammar rule", true]
+  ].forEach(function (c) { COLS.push({ k: c[0], l: c[1], v: txt(c[0]), h: cell(c[0], c[2]), hidden: true }); });
+  var attrKeys = []; S.jobs.forEach(function (j) { Object.keys(j.attrs || {}).forEach(function (a) { if (attrKeys.indexOf(a) < 0) attrKeys.push(a); }); });
+  attrKeys.forEach(function (a) { COLS.push({ k: "attr:" + a, l: a, v: function (j) { return (j.attrs || {})[a] || ""; }, h: function (j) { var v = (j.attrs || {})[a]; return v ? esc(v) : '<span class="unset">—</span>'; }, hidden: true }); });
+  var visible = new Set(COLS.filter(function (c) { return !c.hidden; }).map(function (c) { return c.k; }));
+  var st = { q: "", sort: { k: "sev", dir: 1 }, f: { sys: new Set(), cat: new Set(), sev: new Set(), state: new Set(), mon: new Set() }, link: new Set(), conf: new Set() };
+
+  view.innerHTML =
+    '<div class="filterbar" id="fbar"><label class="search">' + icon("search") + '<span class="sr-only">Search all columns</span><input class="input" id="q" placeholder="Search all columns…" style="width:240px"></label></div>' +
+    '<div class="content" style="padding-top:var(--sp-3)">' +
+      '<div class="table-wrap"><table class="dt" id="tbl"></table></div>' +
+      '<div class="table-foot"><span id="count"></span><span class="faint">' + COLS.length + ' columns available under Columns · the real table is virtualized (TanStack Virtual)</span></div>' +
+    "</div>";
+
+  var fbar = document.getElementById("fbar"), O = RFV.filterOptions;
+  [["sys", "System"], ["cat", "Category"], ["sev", "Severity"], ["state", "State"], ["mon", "Monitored"]].forEach(function (d) { fbar.appendChild(RFV.filterChip({ label: d[1], options: O[d[0]], selected: st.f[d[0]], onChange: render })); });
+  fbar.appendChild(RFV.filterChip({ label: "Link", options: ["exact", "normalized", "mapped", "inferred", "suggested", "unmatched"].map(function (v) { return { v: v, l: v, html: RFV.linkTag(v) }; }), selected: st.link, onChange: render }));
+  fbar.appendChild(RFV.filterChip({ label: "Confidence", options: ["parsed", "assumed", "unparseable"].map(function (v) { return { v: v, l: v }; }), selected: st.conf, onChange: render }));
+  var right = document.createElement("span"); right.style.cssText = "margin-left:auto;display:flex;gap:8px;align-items:center";
+  var colChip = RFV.filterChip({ label: "Columns", options: COLS.map(function (c) { return { v: c.k, l: c.l }; }), selected: visible, onChange: render });
+  colChip.classList.add("colmenu");
+  right.appendChild(colChip);
+  right.insertAdjacentHTML("beforeend",
+    '<button class="btn btn-sm" id="csv">' + icon("download", "i-sm") + "CSV</button>" +
+    '<button class="btn btn-sm" title="Generated by the app with SheetJS (not available in this mockup)">' + icon("download", "i-sm") + "XLSX</button>" +
+    '<a class="btn btn-sm btn-primary" href="export-dialog.html?view=explorer">' + icon("download", "i-sm") + "HTML</a>");
+  fbar.appendChild(right);
+
+  function rows() {
+    var q = st.q;
+    var r = S.jobs.filter(function (j) {
+      if (!RFV.passes(j, st.f)) return false;
+      if (st.link.size && !st.link.has(j.status)) return false;
+      if (st.conf.size && !st.conf.has(j.conf)) return false;
+      if (q) {
+        var hay = [j.name, j.desc, j.freq, j.human, j.cronCol, RFV.catName(j), RFV.svcName(j), j.catRaw, j.svcRaw, j.region, j.tab, "r" + j.row, S.systems[j.sys].name, j.sub, j.owner, j.sysImpact, j.bizImpact, j.group, j.alertFreq]
+          .concat(j.alerts, Object.keys(j.attrs || {}).map(function (k) { return j.attrs[k]; })).join(" ").toLowerCase();
+        if (hay.indexOf(q) < 0) return false;
+      }
+      return true;
+    });
+    var col = COLS.filter(function (c) { return c.k === st.sort.k; })[0];
+    r.sort(function (a, b) { var x = col.v(a), y = col.v(b); return (x > y ? 1 : x < y ? -1 : a.name.localeCompare(b.name)) * st.sort.dir; });
+    return r;
+  }
+  function render() {
+    var cols = COLS.filter(function (c) { return visible.has(c.k); }), r = rows();
+    document.getElementById("tbl").innerHTML = "<thead><tr>" + cols.map(function (c) {
+      var on = st.sort.k === c.k;
+      return "<th" + (on ? ' aria-sort="' + (st.sort.dir > 0 ? "ascending" : "descending") + '"' : "") + '><button data-sort="' + c.k + '">' + esc(c.l) + '<span class="ar">' + (on && st.sort.dir < 0 ? "▼" : "▲") + "</span></button></th>";
+    }).join("") + "</tr></thead><tbody>" + r.map(function (j) {
+      return '<tr data-job="' + esc(j.id) + '"' + (j.state === "Disabled" ? ' class="is-disabled"' : "") + ">" + cols.map(function (c) { return "<td>" + c.h(j) + "</td>"; }).join("") + "</tr>";
+    }).join("") + "</tbody>";
+    document.getElementById("count").textContent = "Showing " + r.length + " of " + S.jobs.length + " jobs · sorted by " + COLS.filter(function (c) { return c.k === st.sort.k; })[0].l + (st.sort.dir > 0 ? " ↑" : " ↓");
+  }
+  document.getElementById("tbl").addEventListener("click", function (e) {
+    var b = e.target.closest("[data-sort]"); if (!b) return;
+    var k = b.getAttribute("data-sort"); st.sort = { k: k, dir: st.sort.k === k ? -st.sort.dir : 1 }; render();
+  });
+  document.getElementById("q").addEventListener("input", function (e) { st.q = e.target.value.trim().toLowerCase(); render(); });
+  document.getElementById("csv").addEventListener("click", function () {
+    var cols = COLS.filter(function (c) { return visible.has(c.k); });
+    var q = function (v) { v = v == null ? "" : String(v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+    var csv = [cols.map(function (c) { return q(c.l); }).join(",")].concat(rows().map(function (j) { return cols.map(function (c) { return q(c.k === "sev" ? j.sev : c.k === "mon" ? (j.mon == null ? "" : j.mon ? "Yes" : "No") : c.v(j)); }).join(","); })).join("\n");
+    var a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" })); a.download = "jobs-explorer_" + S.meta.today + ".csv"; a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+  });
+  render();
+})();
+</script>
+</body>
+</html>

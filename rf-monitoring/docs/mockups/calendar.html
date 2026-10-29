@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Job Calendar · Mockup</title>
+<link rel="stylesheet" href="assets/tokens.css">
+<link rel="stylesheet" href="assets/components.css">
+<style>
+  .cal-top { padding: var(--sp-2) var(--sp-5) 0; display: grid; gap: 6px; }
+  .modal-overlay { position: fixed; inset: 0; background: var(--overlay); z-index: 54; display: none; }
+  .modal-overlay.open { display: block; }
+  .cal-layout { grid-template-columns: 1fr 250px; }
+  @media print { .cal-layout { grid-template-columns: 1fr; } @page { size: landscape; } }
+</style>
+</head>
+<body>
+<script src="assets/catalog-data.js"></script>
+<script src="assets/shared.js"></script>
+<script>
+(function () {
+  var esc = RFV.esc, icon = RFV.icon, S = CATALOG;
+  var view = RFV.shell({ page: "calendar.html", exportView: "calendar", title: null });
+  var MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+  var DOW = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+  var TOP_N = 4, BAND = 48;
+
+  var st = {
+    y: +S.meta.today.slice(0, 4), m: +S.meta.today.slice(5, 7), colourBy: "severity", onlyNonDaily: false, day: null,
+    f: { sys: new Set(), cat: new Set(), sev: new Set(), state: new Set(["Enabled"]), mon: new Set(), region: new Set() }
+  };
+
+  view.innerHTML =
+    '<div class="cal-top">' +
+      '<div class="cal-head">' +
+        '<button class="btn btn-icon" id="prev" aria-label="Previous month">' + icon("chevL", "i-sm") + "</button>" +
+        '<button class="btn" id="today">Today</button>' +
+        '<button class="btn btn-icon" id="next" aria-label="Next month">' + icon("chevR", "i-sm") + "</button>" +
+        '<h1 class="cal-title" id="title"></h1>' +
+        '<label class="sr-only" for="mpick">Month</label><input type="month" class="input" id="mpick" style="width:160px">' +
+        '<span class="sep" style="width:1px;height:22px;background:var(--border)"></span>' +
+        '<span class="faint" style="font-size:var(--fs-sm)">Times in</span><strong id="tzname" style="font-size:var(--fs-sm)"></strong>' +
+        '<span style="flex:1"></span>' +
+        '<span class="faint" style="font-size:var(--fs-sm)">Colour by</span>' +
+        '<span class="btn-group" role="group" aria-label="Colour by"><button class="btn btn-sm" data-colour="severity" aria-pressed="true">Severity</button><button class="btn btn-sm" data-colour="system" aria-pressed="false">System</button></span>' +
+        '<label class="check" style="margin-left:8px"><input type="checkbox" id="nondaily"> Only non-daily</label>' +
+      "</div>" +
+    "</div>" +
+    '<div class="filterbar" id="fbar" style="margin-top:8px"></div>' +
+    '<div class="filter-summary" id="fsum"></div>' +
+    '<div class="cal-layout"><div><div class="legend" id="legend"></div><div class="cal-grid" id="grid" role="grid" aria-label="Month"></div></div>' +
+    '<aside class="side-panel" id="side" aria-label="Unscheduled jobs"></aside></div>' +
+    '<div class="modal-overlay" id="moverlay"></div>' +
+    '<section class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="mtitle"></section>';
+
+  /* ── Filters ───────────────────────────────────────────── */
+  var O = RFV.filterOptions, fbar = document.getElementById("fbar");
+  var svcSel = new Set();
+  var svcOpts = []; S.jobs.forEach(function (j) { var n = RFV.svcName(j); if (!svcOpts.some(function (o) { return o.v === n; })) svcOpts.push({ v: n, l: n }); });
+  svcOpts.sort(function (a, b) { return a.l.localeCompare(b.l); });
+  [["sys", "System"], ["cat", "Service category"]].forEach(function (d) { fbar.appendChild(RFV.filterChip({ label: d[1], options: O[d[0]], selected: st.f[d[0]], onChange: render })); });
+  fbar.appendChild(RFV.filterChip({ label: "Business service", options: svcOpts, selected: svcSel, onChange: render }));
+  [["sev", "Severity"], ["state", "State"], ["mon", "Monitored"], ["region", "Region"]].forEach(function (d) { fbar.appendChild(RFV.filterChip({ label: d[1], options: O[d[0]], selected: st.f[d[0]], onChange: render })); });
+
+  function filtered() {
+    return S.jobs.filter(function (j) {
+      if (!RFV.passes(j, st.f)) return false;
+      if (svcSel.size && !svcSel.has(RFV.svcName(j))) return false;
+      return true;
+    });
+  }
+
+  /* ── Rendering helpers ─────────────────────────────────── */
+  function colourVar(j) { return st.colourBy === "severity" ? "var(--sev" + (j.sev === "Unknown" ? "-unknown" : j.sev.slice(3)) + ")" : "var(--sys-" + j.sys + ")"; }
+  function lineIcon(j) {
+    return st.colourBy === "severity" ? RFV.sevIcon(j.sev, "i-sm")
+      : '<span class="sys sys-' + j.sys + '" style="height:14px;padding:0"><span class="glyph" style="width:14px;height:14px;font-size:7.5px">' + S.systems[j.sys].glyph + "</span></span>";
+  }
+  function sortEntries(list) {
+    return list.sort(function (a, b) {
+      return RFV.SEV_ORDER[a.j.sev] - RFV.SEV_ORDER[b.j.sev] || (RFV.isDaily(a.j) - RFV.isDaily(b.j)) || a.a.first - b.a.first;
+    });
+  }
+  function countLabel(a) { return a.count > 1 ? '<span class="cnt' + (a.count >= BAND ? " hf" : "") + '">×' + a.count + "</span>" : '<span class="cnt">' + RFV.hhmm(a.first) + "</span>"; }
+  function sev1Cluster(entries) {
+    var per = new Array(24).fill(0);
+    entries.forEach(function (e) { if (e.j.sev === "Sev1" && e.a.count <= 24) e.a.hist.forEach(function (n, h) { if (n) per[h]++; }); });
+    var best = -1, n = 1; per.forEach(function (c, h) { if (c > n) { n = c; best = h; } });
+    return best < 0 ? null : { hour: best, n: n };
+  }
+
+  var agg = {}, gridStart, gridEnd;
+  function render() {
+    var tz = RFV.tz();
+    var first = RFV.day(st.y, st.m, 1), last = RFV.day(st.y, st.m + 1, 1); last = RFV.addDays(last, -1);
+    gridStart = RFV.addDays(first, -((first.getUTCDay() + 6) % 7));
+    gridEnd = RFV.addDays(last, (7 - last.getUTCDay()) % 7);
+    var jobs = filtered();
+    var shown = jobs.filter(function (j) { return RFV.isScheduled(j) && (!st.onlyNonDaily || !RFV.isDaily(j)); });
+    agg = RFV.aggregate(shown, gridStart, gridEnd, tz);
+
+    document.getElementById("title").textContent = MONTHS[st.m - 1] + " " + st.y;
+    document.getElementById("mpick").value = st.y + "-" + String(st.m).padStart(2, "0");
+    document.getElementById("tzname").textContent = RFV.tzLabel(tz);
+    RFV.$$("[data-colour]").forEach(function (b) { b.setAttribute("aria-pressed", String(b.getAttribute("data-colour") === st.colourBy)); });
+
+    // Day stats: distinct jobs, signatures, median, weekday mode
+    var days = [], counts = [];
+    for (var d = gridStart; d <= gridEnd; d = RFV.addDays(d, 1)) {
+      var k = RFV.key(d), day = agg[k] || {}, ids = Object.keys(day).sort();
+      var entry = { d: d, k: k, ids: ids, inMonth: d.getUTCMonth() + 1 === st.m };
+      days.push(entry);
+      if (entry.inMonth) counts.push(ids.length);
+    }
+    counts.sort(function (a, b) { return a - b; });
+    var median = counts[Math.floor(counts.length / 2)] || 0;
+
+    var html = DOW.map(function (n) { return '<div class="cal-dow" role="columnheader">' + n + "</div>"; }).join("");
+    days.forEach(function (e) {
+      var entries = sortEntries(e.ids.map(function (id) { return { j: RFV.job(id), a: agg[e.k][id] }; }));
+      var nd = entries.filter(function (x) { return !RFV.isDaily(x.j); }).length;
+      var cl = sev1Cluster(entries);
+      var extra = e.ids.length - median, lvl = extra <= 0 ? 0 : extra <= 1 ? 1 : extra <= 2 ? 2 : extra <= 4 ? 3 : 4;
+      var differs = e.inMonth && entries.some(function (x) { var s = x.j.sched.t === "dep" ? RFV.job(x.j.sched.up).sched : x.j.sched; return s.dom || s.months || s.nth; });
+      var hist = new Array(24).fill(0); entries.forEach(function (x) { if (x.a.count <= BAND) x.a.hist.forEach(function (n, h) { hist[h] += n; }); });
+      var hmax = Math.max.apply(null, hist) || 1;
+      var cls = "daycell" + (e.inMonth ? "" : " out") + (e.k === RFV.todayKey() ? " today" : "") + (differs ? " differs" : "");
+      html += '<button type="button" class="' + cls + '" data-day="' + e.k + '" style="background:' + (lvl ? "var(--load-" + lvl + ")" : "var(--surface)") + '" aria-label="' + e.k + ", " + entries.length + " jobs" + (nd ? ", " + nd + " non-daily" : "") + '">' +
+        '<span class="dhead"><span class="dnum">' + e.d.getUTCDate() + "</span>" +
+        (nd ? '<span class="mark mark-nd" title="' + nd + ' non-daily job(s)">' + icon("diamond", "i-sm") + nd + "</span>" : "") +
+        (cl ? '<span class="mark mark-cluster" title="' + cl.n + " Sev1 jobs start in the " + RFV.hhmm(cl.hour * 60) + ' hour">≋' + cl.n + "@" + String(cl.hour).padStart(2, "0") + "h</span>" : "") +
+        "</span>" +
+        entries.slice(0, TOP_N).map(function (x) {
+          var assumed = x.j.conf === "assumed";
+          return '<span class="dline" title="' + esc(x.j.name + " · " + x.j.human + " · " + x.j.sev) + '"><span class="bar' + (assumed ? " assumed" : "") + '" style="background:' + colourVar(x.j) + ";color:" + colourVar(x.j) + '"></span>' + lineIcon(x.j) +
+            '<span class="nm">' + (RFV.isDaily(x.j) ? "" : "◆ ") + esc(x.j.name) + "</span>" + countLabel(x.a) + "</span>";
+        }).join("") +
+        (entries.length > TOP_N ? '<span class="more">+' + (entries.length - TOP_N) + ' more <span class="faint" style="font-weight:500">· ' + entries.length + " jobs</span></span>" : "") +
+        '<span class="peak" aria-hidden="true" title="Batch starts per hour (jobs running ≤48×/day)">' + hist.map(function (n) { return '<i style="height:' + Math.max(4, Math.round(n / hmax * 100)) + '%"></i>'; }).join("") + "</span>" +
+        "</button>";
+    });
+    document.getElementById("grid").innerHTML = html;
+
+    // Legend
+    var lg = st.colourBy === "severity"
+      ? RFV.SEVS.map(function (s) { return '<span class="item">' + RFV.sevBadge(s) + "</span>"; }).join("")
+      : Object.keys(S.systems).map(function (k) { return '<span class="item">' + RFV.sysChip(k) + "</span>"; }).join("");
+    var allUnknown = shown.length && shown.every(function (j) { return j.sev === "Unknown"; });
+    document.getElementById("legend").innerHTML = (allUnknown && st.colourBy === "severity"
+      ? '<div class="notice warn" style="flex-basis:100%">' + icon("warn", "i-sm") + '<span>Severity is blank for every job in the workbook, so every entry is grey "Unknown". Use <strong>Colour by: System</strong> to tell jobs apart until severities are filled in.</span></div>' : "") + lg +
+      '<span class="item"><span class="mark mark-nd">' + icon("diamond", "i-sm") + "n</span> non-daily jobs</span>" +
+      '<span class="item"><span class="mark mark-cluster">≋</span> ≥2 Sev1 starts in one hour</span>' +
+      '<span class="item"><span class="sw" style="background:var(--load-3)"></span> more jobs than the month median</span>' +
+      '<span class="item"><span class="sw" style="box-shadow:inset 0 0 0 2px var(--accent)"></span> date-of-month jobs (monthly, day ranges, nth weekday)</span>' +
+      '<span class="item">×N runs that day · dashed bar = assumed schedule · bottom strip = batch starts per hour</span>';
+
+    // Unscheduled panel
+    var uns = jobs.filter(function (j) { return !RFV.isScheduled(j); });
+    var REASON = { "blank": "No frequency given", "manual": "Manual / on demand", "on demand": "Manual / on demand", "not scheduled": "Not scheduled", "event": "Event-driven", "upstream not found": "Upstream not found", "unparseable": "Unparseable" };
+    var groups = {}; uns.forEach(function (j) { var r = REASON[j.sched.reason] || j.sched.reason; (groups[r] = groups[r] || []).push(j); });
+    document.getElementById("side").innerHTML = '<h2>Unscheduled / unknown frequency <span class="count-badge">' + uns.length + "</span></h2>" +
+      '<p class="faint" style="font-size:var(--fs-sm);margin:0">These jobs match the filters but have no plottable schedule. They are never dropped.</p>' +
+      Object.keys(groups).map(function (g) {
+        return "<h3>" + esc(g) + " (" + groups[g].length + ")</h3><ul>" + groups[g].map(function (j) {
+          return '<li><button data-job="' + esc(j.id) + '">' + RFV.sevIcon(j.sev, "i-sm") + " " + esc(j.name) + '<span class="why">' + (j.freq ? '"' + esc(j.freq) + '"' : "blank frequency cell") + " · " + esc(j.tab) + " r" + j.row + "</span></button></li>";
+        }).join("") + "</ul>";
+      }).join("") +
+      '<h3>Assumed schedules</h3><p class="faint" style="font-size:var(--fs-sm);margin:0">' + shown.filter(function (j) { return j.conf === "assumed"; }).length + " plotted jobs use defaults (dashed bars). Their assumptions are listed in each job's drawer.</p>";
+
+    var names = { sys: "System", cat: "Category", sev: "Severity", state: "State", mon: "Monitored", region: "Region" };
+    document.getElementById("fsum").textContent = shown.length + " scheduled jobs shown · " + RFV.filterText(st.f, names) + (svcSel.size ? " · Service: " + Array.from(svcSel).join(", ") : "") + (st.onlyNonDaily ? " · Only non-daily" : "");
+    if (st.day) openDay(st.day);
+  }
+
+  /* ── Day drill-down (DESIGN.md §14.5) ──────────────────── */
+  var modal = document.getElementById("modal"), mo = document.getElementById("moverlay"), dayOpener = null;
+  function openDay(k) {
+    var p = k.split("-").map(Number), d = RFV.day(p[0], p[1], p[2]);
+    if (!agg[k] && (d < gridStart || d > gridEnd)) {
+      // Stepping outside the visible grid: move the month (as the real view does)
+      st.y = p[0]; st.m = p[1]; st.day = k; render(); return;
+    }
+    if (!modal.classList.contains("open")) dayOpener = document.activeElement;
+    st.day = k;
+    var day = agg[k] || {};
+    var entries = sortEntries(Object.keys(day).map(function (id) { return { j: RFV.job(id), a: day[id] }; }));
+    var hist = new Array(24).fill(0); entries.forEach(function (x) { x.a.hist.forEach(function (n, h) { hist[h] += n; }); });
+    var hmax = Math.max.apply(null, hist) || 1, peakH = hist.indexOf(hmax);
+    var total = hist.reduce(function (a, b) { return a + b; }, 0);
+    var bySys = {}; entries.forEach(function (x) { (bySys[x.j.sys] = bySys[x.j.sys] || []).push(x); });
+    var dname = d.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric", timeZone: "UTC" });
+
+    var rows = Object.keys(S.systems).filter(function (s) { return bySys[s]; }).map(function (s) {
+      return '<div class="tl-group">' + RFV.sysChip(s) + '<span class="faint">' + bySys[s].length + " jobs</span></div>" +
+        bySys[s].map(function (x) {
+          var c = colourVar(x.j), assumed = x.j.conf === "assumed", track;
+          if (x.a.count > BAND) {
+            track = '<span class="tl-band" style="left:' + (x.a.first / 14.4) + "%;width:" + Math.max(0.5, (x.a.last - x.a.first) / 14.4) + "%;background-color:" + c + '" title="' + x.a.count + " runs, " + RFV.hhmm(x.a.first) + "–" + RFV.hhmm(x.a.last) + '"></span>';
+          } else {
+            track = x.a.times.map(function (m) { return '<span class="tl-mk' + (assumed ? " assumed" : "") + '" style="left:' + (m / 14.4) + "%;background:" + c + ";color:" + c + '" title="' + esc(x.j.name) + " · " + RFV.hhmm(m) + '"></span>'; }).join("");
+          }
+          return '<div class="tl-row"><button class="tl-label" data-job="' + esc(x.j.id) + '" title="Open details">' + RFV.sevIcon(x.j.sev, "i-sm") + '<span class="nm">' + esc(x.j.name) + "</span>" + (x.j.conf === "assumed" ? RFV.confMark(x.j) : "") + "</button>" +
+            '<div class="tl-track">' + track + '</div><div class="tl-cnt">' + (x.a.count > 1 ? "×" + x.a.count : RFV.hhmm(x.a.first)) + "</div></div>";
+        }).join("");
+    }).join("");
+
+    modal.innerHTML = "<header>" +
+      '<h2 id="mtitle">' + esc(dname) + ' <span class="faint" style="font-weight:500;font-size:var(--fs-md)">· ' + esc(RFV.tzLabel(RFV.tz())) + " · " + entries.length + " jobs · " + total + " runs</span></h2>" +
+      '<span class="legend" style="padding:0">' + (st.colourBy === "severity" ? RFV.SEVS.map(RFV.sevBadge).join("") : "") + "</span>" +
+      '<button class="btn btn-sm" id="dprev">' + icon("chevL", "i-sm") + 'Day</button><button class="btn btn-sm" id="dnext">Day' + icon("chevR", "i-sm") + "</button>" +
+      '<button class="btn btn-ghost btn-icon" id="dclose" aria-label="Close day view">' + icon("x") + "</button></header>" +
+      '<div class="mbody"><div class="tl">' +
+        '<div class="tl-axis"><div></div><div class="ticks">' + [0, 3, 6, 9, 12, 15, 18, 21].map(function (h) { return '<span style="flex:3">' + String(h).padStart(2, "0") + ":00</span>"; }).join("") + "</div><div></div></div>" +
+        '<div class="tl-row tl-hist"><div class="tl-label" style="cursor:default">Runs per hour <span class="faint">· peak ' + RFV.hhmm(peakH * 60) + " (" + hmax + ")</span></div>" +
+          '<div class="tl-track">' + hist.map(function (n, h) { return '<i class="' + (h === peakH ? "peak-h" : "") + '" style="height:' + Math.max(2, Math.round(n / hmax * 100)) + '%" title="' + String(h).padStart(2, "0") + ":00 · " + n + ' runs"></i>'; }).join("") + "</div><div></div></div>" +
+        (rows || '<p class="unset" style="padding:16px">No scheduled jobs on this day for the current filters.</p>') +
+      "</div></div>";
+    modal.classList.add("open"); mo.classList.add("open");
+    document.getElementById("dclose").addEventListener("click", closeDay);
+    document.getElementById("dprev").addEventListener("click", function () { openDay(RFV.key(RFV.addDays(d, -1))); });
+    document.getElementById("dnext").addEventListener("click", function () { openDay(RFV.key(RFV.addDays(d, 1))); });
+    document.getElementById("dclose").focus();
+  }
+  function closeDay() { modal.classList.remove("open"); mo.classList.remove("open"); st.day = null; if (dayOpener && dayOpener.focus) dayOpener.focus(); }
+  mo.addEventListener("click", closeDay);
+  document.addEventListener("keydown", function (e) { if (e.key === "Escape" && !e.rfvDrawerClosed && modal.classList.contains("open")) closeDay(); });
+
+  /* ── Events ────────────────────────────────────────────── */
+  document.getElementById("grid").addEventListener("click", function (e) { var c = e.target.closest("[data-day]"); if (c) openDay(c.getAttribute("data-day")); });
+  function shift(n) { st.m += n; if (st.m < 1) { st.m = 12; st.y--; } if (st.m > 12) { st.m = 1; st.y++; } st.day = null; render(); }
+  document.getElementById("prev").addEventListener("click", function () { shift(-1); });
+  document.getElementById("next").addEventListener("click", function () { shift(1); });
+  document.getElementById("today").addEventListener("click", function () { var t = S.meta.today.split("-"); st.y = +t[0]; st.m = +t[1]; render(); });
+  document.getElementById("mpick").addEventListener("change", function (e) { var p = e.target.value.split("-"); if (p.length === 2) { st.y = +p[0]; st.m = +p[1]; render(); } });
+  document.getElementById("nondaily").addEventListener("change", function (e) { st.onlyNonDaily = e.target.checked; render(); });
+  RFV.$$("[data-colour]").forEach(function (b) { b.addEventListener("click", function () { st.colourBy = b.getAttribute("data-colour"); render(); }); });
+  document.addEventListener("rfv:tz", render);
+
+  var m0 = RFV.qs("month"); if (m0 && /^\d{4}-\d{2}$/.test(m0)) { st.y = +m0.slice(0, 4); st.m = +m0.slice(5); }
+  render();
+  var d0 = RFV.qs("day"); if (d0) openDay(d0);
+})();
+</script>
+</body>
+</html>

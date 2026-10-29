@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gaps and Data Quality · Mockup</title>
+<link rel="stylesheet" href="assets/tokens.css">
+<link rel="stylesheet" href="assets/components.css">
+<style>
+  .svc-cloud { display: flex; flex-wrap: wrap; gap: 6px; }
+  .svc-cloud .tag { font-weight: 500; }
+  .map-row td { vertical-align: middle; }
+  .map-row.confirmed td { background: var(--ok-soft); }
+  .map-row.rejected td { opacity: .55; }
+  .dt td.wrap { white-space: normal; max-width: 420px; }
+  pre.yaml { background: var(--surface-sunken); border-radius: var(--radius); padding: 12px; font: var(--fs-sm)/1.5 var(--font-mono); overflow: auto; white-space: pre; margin: 0; }
+</style>
+</head>
+<body>
+<script src="assets/catalog-data.js"></script>
+<script src="assets/shared.js"></script>
+<script>
+(function () {
+  var esc = RFV.esc, icon = RFV.icon, C = CATALOG, J = C.jobs;
+  var view = RFV.shell({ page: "gaps.html", exportView: "gaps", title: "Gaps & Data Quality", sub: "Computed from all " + J.length + " jobs in " + esc(C.meta.workbook) });
+
+  // ── Gap computations (same rules as packages/core/report) ──
+  var placed = {}; J.forEach(function (j) { if (j.place.cat && j.place.svc) placed[j.place.cat + "|" + j.place.svc] = 1; });
+  var noJobs = C.master.map(function (c) { return [c[0], c[1].filter(function (s) { return !placed[c[0] + "|" + s[0]]; }).map(function (s) { return s[0]; })]; }).filter(function (x) { return x[1].length; });
+  var noJobsN = noJobs.reduce(function (n, x) { return n + x[1].length; }, 0);
+  var unmatched = J.filter(function (j) { return !j.place.cat || !j.place.svc || j.status === "suggested"; });
+  var unmon = J.filter(function (j) { return j.state === "Enabled" && j.mon === false; });
+  var monBlank = J.filter(function (j) { return j.mon == null; });
+  var noAlert = J.filter(function (j) { return j.mon === true && !j.alerts.length; });
+  var missing = J.filter(function (j) { return j.sev === "Unknown" || !j.sla || !j.l1 || !j.l2; });
+  var unparse = J.filter(function (j) { return j.conf === "unparseable"; });
+  var unsched = J.filter(function (j) { return j.sched.t === "none"; });
+  var conflicts = J.filter(function (j) { return j.conflict; });
+  var maps = C.report.mapping.map(function (m) { return Object.assign({}, m); });
+
+  function card(id, n, lbl, hint, tone) { return '<a class="card ' + (n ? tone || "" : "ok") + '" href="#' + id + '"><div class="num">' + n + '</div><div class="lbl">' + lbl + '</div><div class="hint">' + hint + "</div></a>"; }
+  function jobTable(list, cols) {
+    if (!list.length) return '<div class="panel unset">Nothing here.</div>';
+    return '<div class="table-wrap" style="max-height:420px"><table class="dt"><thead><tr><th>Job</th><th>System</th><th>Sheet / row</th>' + cols.map(function (c) { return "<th>" + c[0] + "</th>"; }).join("") + "</tr></thead><tbody>" +
+      list.map(function (j) { return '<tr data-job="' + esc(j.id) + '"><td><strong>' + esc(j.name) + "</strong></td><td>" + RFV.sysChip(j.sys, j.sub) + '</td><td class="faint">' + esc(j.tab) + " r" + j.row + "</td>" + cols.map(function (c) { return '<td class="wrap">' + c[1](j) + "</td>"; }).join("") + "</tr>"; }).join("") +
+      '</tbody></table></div><div class="table-foot"><span>' + list.length + " job" + (list.length === 1 ? "" : "s") + "</span><span>Click a row for the full drawer</span></div>";
+  }
+  var raw = function (v) { return v ? '<span class="raw">' + esc(v) + "</span>" : '<span class="unset">blank</span>'; };
+
+  view.innerHTML = '<div class="content">' +
+    '<div class="cards">' +
+      card("no-jobs", noJobsN, "Services with no jobs", "of " + C.report.totals.services + " master services", "warn") +
+      card("unmatched", unmatched.length, "Unmapped / unmatched jobs", J.filter(function (j) { return !j.place.cat; }).length + " Unmapped · " + J.filter(function (j) { return j.place.cat && !j.place.svc; }).length + " Unassigned service · " + J.filter(function (j) { return j.status === "suggested"; }).length + " suggested", "warn") +
+      card("unmonitored", unmon.length, "Enabled but unmonitored", monBlank.length + " more with Monitored blank", "danger") +
+      card("no-alert", noAlert.length, "Monitored, no alert", "alert cell empty or a sentinel (NA, \"No alerts configured…\")", "warn") +
+      card("missing", missing.length, "Missing severity / SLA / L1 / L2", "of " + J.length + " jobs", "danger") +
+      card("unparseable", unparse.length, "Unparseable frequencies", unsched.length + " more have no schedule (manual, not scheduled, blank)", "warn") +
+      card("conflicts", conflicts.length, "Frequency text vs cron column", "DataFusion rows where the two disagree", "warn") +
+    "</div>" +
+
+    '<section class="section" id="mapping"><h2>' + icon("link") + "Mapping helper <span class=\"count-badge\">" + maps.length + " values</span></h2><p>Every distinct job-tab value that doesn't match the master tab, with the number of jobs it affects. Suggested targets come from <code>config/service-mappings.yaml</code>. Hints come from word overlap. Confirmed and rejected choices are saved through the local server.</p>" +
+      '<div class="table-wrap" style="max-height:520px"><table class="dt"><thead><tr><th>Kind</th><th>Value in job tabs</th><th style="text-align:right">Jobs</th><th>Target</th><th>Status</th><th style="text-align:right">Action</th></tr></thead><tbody id="maprows"></tbody></table></div>' +
+      '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px"><span class="faint" id="mapnote" style="align-self:center;font-size:var(--fs-sm)"></span><button class="btn" id="preview">' + icon("eye", "i-sm") + 'Preview YAML</button><button class="btn btn-primary" id="save">Save to config/service-mappings.yaml</button></div>' +
+    "</section>" +
+
+    '<section class="section" id="no-jobs"><h2>Services with no jobs <span class="count-badge">' + noJobsN + "</span></h2><p>Master services that no job row links to (counting suggested mappings). They may be manual processes, or the jobs may be missing from the workbook.</p>" +
+      '<div class="panel" style="display:grid;gap:12px">' + noJobs.map(function (x) { return '<div><div style="font-weight:600;margin-bottom:6px">' + esc(x[0]) + ' <span class="faint">(' + x[1].length + ')</span></div><div class="svc-cloud">' + x[1].map(function (s) { return '<span class="tag">' + esc(s) + "</span>"; }).join("") + "</div></div>"; }).join("") + "</div></section>" +
+
+    '<section class="section" id="unmatched"><h2>Unmapped / unmatched jobs <span class="count-badge">' + unmatched.length + "</span></h2><p>Shown under <em>Unmapped</em> or <em>Unassigned service</em> in every tree, calendar and export. Suggested placements are included until they're confirmed.</p>" +
+      jobTable(unmatched, [["Sheet category / service", function (j) { return raw(j.catRaw) + " / " + raw(j.svcRaw); }], ["Placed under", function (j) { return esc(RFV.catName(j)) + " / " + esc(RFV.svcName(j)); }], ["Status", function (j) { return RFV.linkTag(j.status); }]]) + "</section>" +
+
+    '<section class="section" id="unmonitored"><h2>Enabled but unmonitored <span class="count-badge">' + unmon.length + "</span></h2><p>State is Enabled and Monitored is No. " + monBlank.length + " job(s) have a blank Monitored value and are listed under MONITORED_BLANK on the Load workbook page.</p>" +
+      jobTable(unmon, [["Region", function (j) { return esc(j.region); }], ["Frequency", function (j) { return esc(j.human); }], ["Alert cell", function (j) { return raw(j.alertsRaw); }]]) + "</section>" +
+
+    '<section class="section" id="no-alert"><h2>Monitored jobs with no alert <span class="count-badge">' + noAlert.length + "</span></h2>" +
+      jobTable(noAlert, [["Alert cell", function (j) { return raw(j.alertsRaw); }]]) + "</section>" +
+
+    '<section class="section" id="missing"><h2>Missing severity, SLA or L1/L2 owner <span class="count-badge">' + missing.length + "</span></h2><p>These columns are empty for every job in the workbook today.</p>" +
+      jobTable(missing, [["Missing", function (j) { return [j.sev === "Unknown" ? "Severity" : null, j.sla ? null : "SLA", j.l1 ? null : "L1", j.l2 ? null : "L2"].filter(Boolean).map(function (x) { return '<span class="tag tag-warn">' + x + "</span>"; }).join(" "); }]]) + "</section>" +
+
+    '<section class="section" id="unparseable"><h2>Unparseable frequencies <span class="count-badge">' + unparse.length + "</span></h2><p>Add an entry to <code>config/schedule-overrides.yaml</code> to plot a job. Jobs whose frequency was understood but which have no schedule are listed below. They appear in the calendar's Unscheduled panel.</p>" +
+      jobTable(unparse, [["Raw frequency", function (j) { return raw(j.freq); }]]) +
+      '<h3 style="margin:var(--sp-4) 0 var(--sp-2);font-size:var(--fs-base)">No schedule (manual, not scheduled, blank) <span class="count-badge">' + unsched.length + "</span></h3>" +
+      jobTable(unsched, [["Raw frequency", function (j) { return raw(j.freq); }], ["Reads as", function (j) { return esc(j.human); }]]) + "</section>" +
+
+    '<section class="section" id="conflicts"><h2>Frequency text vs cron column <span class="count-badge">' + conflicts.length + "</span></h2><p>For D&amp;A - DataFusion, the <em>Schedule interval</em> cron column is used for the calendar (DESIGN.md §10.2). These rows disagree with their Job Frequency text. One of the two needs correcting in the sheet.</p>" +
+      jobTable(conflicts, [["Job Frequency text", function (j) { return raw(j.freq); }], ["Text reads as", function (j) { return esc(j.textHuman); }], ["Cron column", function (j) { return raw(j.cronCol); }], ["Used (cron)", function (j) { return esc(j.human); }], ["Issue", function (j) { return '<span class="tag tag-warn">' + esc(j.conflict) + "</span>"; }]]) + "</section>" +
+    "</div>";
+
+  // ── Mapping helper interactions ──
+  function targetOptions(m) {
+    if (m.kind === "Category") return C.master.map(function (c) { return c[0]; });
+    var cat = C.master.filter(function (c) { return c[0] === m.within; })[0];
+    return cat ? cat[1].map(function (s) { return m.within + " / " + s[0]; }) : [];
+  }
+  function renderMaps() {
+    document.getElementById("maprows").innerHTML = maps.map(function (m, i) {
+      var target = m.to ? esc(m.to) : m.hint ? '<span class="faint">hint: ' + esc(m.hint) + "</span>" : '<span class="unset">no suggestion</span>';
+      var status = m.st === "confirmed" ? '<span class="tag tag-ok">' + icon("check", "i-sm") + "confirmed</span>" : m.st === "rejected" ? '<span class="tag">rejected</span>' : m.st === "suggested" ? '<span class="tag tag-dotted">suggested</span>' : '<span class="tag tag-warn">needs a decision</span>';
+      var picker = '<select class="select" data-pick="' + i + '" style="height:26px;font-size:var(--fs-sm);max-width:240px"><option value="">' + (m.to ? "Change…" : "Pick a target…") + "</option>" + targetOptions(m).map(function (c) { return "<option>" + esc(c) + "</option>"; }).join("") + "</select>";
+      return '<tr class="map-row ' + m.st + '"><td>' + m.kind + '</td><td class="wrap"><span class="raw">' + esc(m.raw) + "</span>" + (m.within ? ' <span class="faint">in ' + esc(m.within) + "</span>" : "") + '</td><td style="text-align:right">' + m.jobs + '</td><td class="wrap">' + target + "</td><td>" + status + '</td><td style="text-align:right;white-space:nowrap;max-width:none;overflow:visible">' +
+        (m.to && m.st !== "confirmed" ? '<button class="btn btn-sm" data-act="confirm" data-i="' + i + '">Confirm</button> ' : "") + picker + ' <button class="btn btn-sm btn-ghost" data-act="reject" data-i="' + i + '">Reject</button></td></tr>';
+    }).join("");
+    var c = maps.filter(function (m) { return m.st === "confirmed"; }).length, r = maps.filter(function (m) { return m.st === "rejected"; }).length;
+    document.getElementById("mapnote").textContent = c + " confirmed · " + r + " rejected · " + maps.filter(function (m) { return m.st === "none"; }).length + " need a decision · unsaved";
+  }
+  document.getElementById("maprows").addEventListener("click", function (e) {
+    var b = e.target.closest("[data-act]"); if (!b) return;
+    var m = maps[+b.getAttribute("data-i")];
+    m.st = b.getAttribute("data-act") === "confirm" ? "confirmed" : "rejected"; renderMaps();
+  });
+  document.getElementById("maprows").addEventListener("change", function (e) {
+    var s = e.target.closest("[data-pick]"); if (!s || !s.value) return;
+    var m = maps[+s.getAttribute("data-pick")]; m.to = s.value; m.st = "confirmed"; renderMaps();
+  });
+  function yaml() {
+    var q = function (s) { return '"' + String(s).replace(/"/g, '\\"') + '"'; };
+    var keep = function (m) { return m.st === "confirmed" || m.st === "rejected" || m.st === "suggested"; };
+    var cats = maps.filter(function (m) { return m.kind === "Category" && keep(m) && (m.to || m.st === "rejected"); });
+    var svcs = maps.filter(function (m) { return m.kind === "Service" && keep(m) && (m.to || m.st === "rejected"); });
+    return "# config/service-mappings.yaml\nversion: 1\ncategories:\n" + cats.map(function (m) { return "  - from: " + q(m.raw) + "\n    to: " + q(m.to || "") + "\n    status: " + m.st; }).join("\n") +
+      "\nservices:\n" + svcs.map(function (m) { var p = (m.to || " / ").split(" / "); return "  - from: " + q(m.raw) + "\n    within: " + q(m.within) + "\n    to: { category: " + q(p[0]) + ", service: " + q(p.slice(1).join(" / ")) + " }\n    status: " + m.st; }).join("\n") + "\n";
+  }
+  document.getElementById("preview").addEventListener("click", function () { RFV.openPanel("service-mappings.yaml preview", '<span class="tag tag-info">validated against the zod schema before saving</span>', '<pre class="yaml">' + esc(yaml()) + "</pre>"); });
+  document.getElementById("save").addEventListener("click", function () {
+    RFV.openPanel("Saved (simulated)", "", '<p class="notice ok">' + icon("check", "i-sm") + "<span>In the app, the local server writes the file atomically, keeps a <code>.bak</code>, and the catalog reloads with the new mappings.</span></p><pre class=\"yaml\">" + esc(yaml()) + "</pre>");
+    document.getElementById("mapnote").textContent = "Saved (simulated)";
+  });
+  renderMaps();
+})();
+</script>
+</body>
+</html>

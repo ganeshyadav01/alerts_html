@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Service Jobs Tree · Mockup</title>
+<link rel="stylesheet" href="assets/tokens.css">
+<link rel="stylesheet" href="assets/components.css">
+<style>
+  .scopebar { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; padding: var(--sp-2) var(--sp-5) var(--sp-3); }
+  .tree-wrap .otree { padding: 32px 40px 64px; overflow: visible; display: inline-block; }
+  .collapsed-hint { font-size: var(--fs-xs); color: var(--text-faint); }
+  .onode.hit, .tile.hit { outline: 3px solid var(--accent); outline-offset: 2px; }
+</style>
+</head>
+<body>
+<script src="assets/catalog-data.js"></script>
+<script src="assets/shared.js"></script>
+<script>
+(function () {
+  var esc = RFV.esc, icon = RFV.icon, S = CATALOG;
+  var view = RFV.shell({ page: "service-jobs-tree.html", exportView: "service-jobs-tree", title: "Service → Jobs", sub: "Category → Business Service → Source System → Job" });
+
+  var st = {
+    scope: "category", cat: "Customer Management", svc: "Customer Management|Profile and Account Maintenance",
+    group: true, unmapped: true, collapsed: new Set(), q: "",
+    f: { sys: new Set(), region: new Set(), state: new Set(), mon: new Set(), sev: new Set(), l1: new Set(), l2: new Set() },
+    k: 1, tx: 0, ty: 0
+  };
+
+  var catNames = S.master.map(function (c) { return c[0]; }).concat(["Unmapped"]);
+  var svcKeys = [];
+  S.jobs.forEach(function (j) { var k = RFV.catName(j) + "|" + RFV.svcName(j); if (svcKeys.indexOf(k) < 0) svcKeys.push(k); });
+  svcKeys.sort();
+
+  view.innerHTML =
+    '<div class="scopebar">' +
+      '<span style="font-weight:600">Scope</span>' +
+      '<span class="btn-group" role="radiogroup" aria-label="Scope">' +
+        '<button class="btn" data-scope="service">Service</button><button class="btn" data-scope="category">Category</button><button class="btn" data-scope="all">All services</button></span>' +
+      '<select class="select" id="scope-svc" aria-label="Service">' + svcKeys.map(function (k) { var p = k.split("|"); return '<option value="' + esc(k) + '">' + esc(p[1]) + " · " + esc(p[0]) + "</option>"; }).join("") + "</select>" +
+      '<select class="select" id="scope-cat" aria-label="Category">' + catNames.map(function (c) { return '<option value="' + esc(c) + '">' + esc(c) + "</option>"; }).join("") + "</select>" +
+      '<span style="flex:1"></span>' +
+      '<label class="search">' + icon("search") + '<span class="sr-only">Search jobs</span><input class="input" id="q" placeholder="Find a job…" style="width:200px"></label>' +
+    "</div>" +
+    '<div class="filterbar" id="fbar"></div>' +
+    '<div class="filter-summary" id="fsum"></div>' +
+    '<div class="toolbar" style="padding:0 var(--sp-5) var(--sp-2)">' +
+      '<button class="btn btn-sm" id="expand">' + icon("expand", "i-sm") + 'Expand all</button><button class="btn btn-sm" id="collapse">' + icon("collapse", "i-sm") + 'Collapse all</button>' +
+      '<span class="sep"></span><button class="btn btn-sm btn-icon" id="zout" aria-label="Zoom out">' + icon("minus", "i-sm") + '</button><span class="zoom-label" id="zl">100%</span><button class="btn btn-sm btn-icon" id="zin" aria-label="Zoom in">' + icon("plus", "i-sm") + '</button><button class="btn btn-sm" id="fit">' + icon("fit", "i-sm") + "Fit</button>" +
+    "</div>" +
+    '<div class="tree-wrap" id="wrap"><div class="tree-canvas" id="canvas"></div></div>';
+
+  /* ── Filters ───────────────────────────────────────────── */
+  var fbar = document.getElementById("fbar"), O = RFV.filterOptions;
+  [["sys", "System"], ["region", "Region"], ["state", "State"], ["mon", "Monitored"], ["sev", "Severity"], ["l1", "L1 team"], ["l2", "L2 team"]].forEach(function (d) {
+    fbar.appendChild(RFV.filterChip({ label: d[1], options: O[d[0]], selected: st.f[d[0]], onChange: render }));
+  });
+  var tg = document.createElement("span"); tg.style.cssText = "display:flex;gap:16px;margin-left:auto";
+  tg.innerHTML = '<label class="check"><input type="checkbox" id="grp" checked> Group by system</label><label class="check"><input type="checkbox" id="unm" checked> Show unmapped jobs</label>';
+  fbar.appendChild(tg);
+
+  /* ── Build tree model ──────────────────────────────────── */
+  function jobsInScope() {
+    return S.jobs.filter(function (j) {
+      if (!RFV.passes(j, st.f)) return false;
+      if (!st.unmapped && RFV.isUnplaced(j)) return false;
+      if (st.scope === "category") return RFV.catName(j) === st.cat;
+      if (st.scope === "service") return RFV.catName(j) + "|" + RFV.svcName(j) === st.svc;
+      return true;
+    });
+  }
+  function groupBy(arr, fn) { var m = {}, order = []; arr.forEach(function (x) { var k = fn(x); if (!m[k]) { m[k] = []; order.push(k); } m[k].push(x); }); return order.map(function (k) { return [k, m[k]]; }); }
+  function catOrder(name) { var i = catNames.indexOf(name); return i < 0 ? 999 : i; }
+
+  function tilesHtml(jobs) {
+    var cols = jobs.length > 6 ? 3 : jobs.length > 2 ? 2 : 1;
+    return '<div class="tilegrid" style="--cols:' + cols + '">' + jobs.map(function (j) {
+      var hit = st.q && j.name.toLowerCase().indexOf(st.q) >= 0;
+      return RFV.jobTile(j).replace('class="tile', 'class="tile' + (hit ? " hit" : ""));
+    }).join("") + "</div>";
+  }
+  function nodeBtn(id, cls, inner) {
+    var col = st.collapsed.has(id);
+    return '<div class="onode ' + cls + (col ? " collapsed" : "") + '" role="button" tabindex="0" aria-expanded="' + !col + '" data-node="' + esc(id) + '">' + inner + "</div>";
+  }
+  function svcLi(cat, svc, jobs) {
+    var id = "s:" + cat + "|" + svc, unmon = jobs.filter(function (j) { return j.mon === false; }).length, dashed = svc === "Unassigned service" || cat === "Unmapped";
+    var inner = '<span class="title"><span class="caret">' + icon("chevDown", "i-sm") + "</span>" + (dashed ? icon("warn", "i-sm") : "") + esc(svc) + "</span>" +
+      '<span class="badges" style="display:flex;gap:4px"><span class="count-badge">' + jobs.length + (jobs.length === 1 ? " job" : " jobs") + "</span>" + (unmon ? '<span class="count-badge warn">' + icon("warn", "i-sm") + unmon + " unmon</span>" : "") + RFV.sevBadge(RFV.maxSev(jobs)) + "</span>";
+    var html = "<li>" + nodeBtn(id, dashed ? "dashed" : "", inner);
+    if (!st.collapsed.has(id)) {
+      if (st.group) {
+        html += "<ul>" + groupBy(jobs, function (j) { return j.sys; }).map(function (g) {
+          var gid = id + "|" + g[0], col = st.collapsed.has(gid);
+          return '<li><div class="sysgroup"><header role="button" tabindex="0" data-node="' + esc(gid) + '" style="cursor:pointer" aria-expanded="' + !col + '">' + RFV.sysChip(g[0]) + "<span>" + g[1].length + " job" + (g[1].length > 1 ? "s" : "") + "</span>" + (col ? '<span class="collapsed-hint">collapsed</span>' : "") + "</header>" +
+            (col ? "" : tilesHtml(g[1])) + "</div></li>";
+        }).join("") + "</ul>";
+      } else {
+        html += '<ul><li><div class="sysgroup">' + tilesHtml(jobs) + "</div></li></ul>";
+      }
+    }
+    return html + "</li>";
+  }
+  function catLi(cat, jobs) {
+    var id = "c:" + cat, dashed = cat === "Unmapped";
+    var inner = '<span class="title"><span class="caret">' + icon("chevDown", "i-sm") + "</span>" + (dashed ? icon("warn", "i-sm") : "") + esc(cat) + '</span><span class="faint" style="font-size:var(--fs-xs)">' + jobs.length + " jobs</span>";
+    var html = "<li>" + nodeBtn(id, "cat" + (dashed ? " dashed" : ""), inner);
+    if (!st.collapsed.has(id)) {
+      var svcs = groupBy(jobs, RFV.svcName).sort(function (a, b) { return (a[0] === "Unassigned service") - (b[0] === "Unassigned service") || a[0].localeCompare(b[0]); });
+      html += "<ul>" + svcs.map(function (g) { return svcLi(cat, g[0], g[1]); }).join("") + "</ul>";
+    }
+    return html + "</li>";
+  }
+  function render() {
+    var jobs = jobsInScope();
+    var html;
+    if (!jobs.length) html = '<div class="panel" style="margin:40px">No jobs match the current scope and filters.</div>';
+    else {
+      var cats = groupBy(jobs, RFV.catName).sort(function (a, b) { return catOrder(a[0]) - catOrder(b[0]); });
+      var inner = cats.map(function (c) { return catLi(c[0], c[1]); }).join("");
+      html = st.scope === "all"
+        ? '<div class="otree"><ul><li><div class="onode" style="background:var(--text);color:var(--bg);border-color:var(--text)"><span class="title">Business Services</span><span style="font-size:var(--fs-xs);opacity:.75">' + jobs.length + " jobs</span></div><ul>" + inner + "</ul></li></ul></div>"
+        : '<div class="otree"><ul>' + inner + "</ul></div>";
+    }
+    document.getElementById("canvas").innerHTML = html;
+    var names = { sys: "System", region: "Region", state: "State", mon: "Monitored", sev: "Severity", l1: "L1", l2: "L2" };
+    document.getElementById("fsum").textContent = "Showing " + jobs.length + " of " + S.jobs.length + " jobs · " + RFV.filterText(st.f, names) +
+      (st.group ? "" : " · Not grouped by system") + (st.unmapped ? " · Unmapped shown" : " · Unmapped hidden");
+    syncScopeUi();
+    applyTransform();
+  }
+  function syncScopeUi() {
+    RFV.$$("[data-scope]").forEach(function (b) { b.setAttribute("aria-pressed", String(b.getAttribute("data-scope") === st.scope)); });
+    document.getElementById("scope-svc").style.display = st.scope === "service" ? "" : "none";
+    document.getElementById("scope-cat").style.display = st.scope === "category" ? "" : "none";
+    document.getElementById("scope-svc").value = st.svc; document.getElementById("scope-cat").value = st.cat;
+  }
+
+  /* ── Zoom / pan (same behaviour as View 1) ─────────────── */
+  var wrap = document.getElementById("wrap"), canvas = document.getElementById("canvas");
+  function applyTransform() { canvas.style.transform = "translate(" + st.tx + "px," + st.ty + "px) scale(" + st.k + ")"; document.getElementById("zl").textContent = Math.round(st.k * 100) + "%"; }
+  function zoomAt(f, px, py) { var k2 = Math.max(0.2, Math.min(2, st.k * f)); st.tx = px - (px - st.tx) * (k2 / st.k); st.ty = py - (py - st.ty) * (k2 / st.k); st.k = k2; applyTransform(); }
+  function fit(floor) {
+    var w = canvas.scrollWidth, h = canvas.scrollHeight;
+    st.k = Math.max(floor || 0.2, Math.min(1, wrap.clientWidth / w, wrap.clientHeight / h) * 0.98);
+    st.tx = Math.max(8, (wrap.clientWidth - w * st.k) / 2); st.ty = 0;
+    var root = canvas.querySelector(".otree > ul > li > .onode");
+    if (root && w * st.k > wrap.clientWidth) st.tx = wrap.clientWidth / 2 - (root.offsetLeft + root.offsetWidth / 2) * st.k; // keep the root in view
+    applyTransform();
+  }
+  wrap.addEventListener("wheel", function (e) { e.preventDefault(); var r = wrap.getBoundingClientRect(); zoomAt(Math.exp(-e.deltaY * 0.0015), e.clientX - r.left, e.clientY - r.top); }, { passive: false });
+  var drag = null;
+  wrap.addEventListener("pointerdown", function (e) { if (e.target.closest(".onode,.tile,.sysgroup header")) return; drag = { x: e.clientX, y: e.clientY, tx: st.tx, ty: st.ty }; wrap.classList.add("dragging"); wrap.setPointerCapture(e.pointerId); });
+  wrap.addEventListener("pointermove", function (e) { if (!drag) return; st.tx = drag.tx + e.clientX - drag.x; st.ty = drag.ty + e.clientY - drag.y; applyTransform(); });
+  wrap.addEventListener("pointerup", function () { drag = null; wrap.classList.remove("dragging"); });
+
+  /* ── Events ────────────────────────────────────────────── */
+  canvas.addEventListener("click", function (e) {
+    var n = e.target.closest("[data-node]"); if (!n) return;
+    var id = n.getAttribute("data-node"); if (st.collapsed.has(id)) st.collapsed.delete(id); else st.collapsed.add(id); render();
+  });
+  canvas.addEventListener("keydown", function (e) { if ((e.key === "Enter" || e.key === " ") && e.target.matches("[data-node]")) { e.preventDefault(); e.target.click(); } });
+  RFV.$$("[data-scope]").forEach(function (b) { b.addEventListener("click", function () { st.scope = b.getAttribute("data-scope"); st.collapsed.clear(); render(); fit(0.8); }); });
+  document.getElementById("scope-svc").addEventListener("change", function (e) { st.svc = e.target.value; render(); fit(); });
+  document.getElementById("scope-cat").addEventListener("change", function (e) { st.cat = e.target.value; render(); fit(); });
+  document.getElementById("grp").addEventListener("change", function (e) { st.group = e.target.checked; render(); });
+  document.getElementById("unm").addEventListener("change", function (e) { st.unmapped = e.target.checked; render(); });
+  document.getElementById("q").addEventListener("input", function (e) { st.q = e.target.value.trim().toLowerCase(); if (st.q) st.collapsed.clear(); render(); var h = RFV.$(".tile.hit", canvas); if (h) { st.tx = wrap.clientWidth / 2 - (h.offsetLeft + 124) * st.k; applyTransform(); } });
+  document.getElementById("expand").addEventListener("click", function () { st.collapsed.clear(); render(); fit(); });
+  document.getElementById("collapse").addEventListener("click", function () {
+    RFV.$$("[data-node]", canvas).forEach(function (n) { var id = n.getAttribute("data-node"); if (id.indexOf("s:") === 0 && id.split("|").length === 2) st.collapsed.add(id); });
+    render(); fit();
+  });
+  document.getElementById("zin").addEventListener("click", function () { zoomAt(1.2, wrap.clientWidth / 2, 40); });
+  document.getElementById("zout").addEventListener("click", function () { zoomAt(1 / 1.2, wrap.clientWidth / 2, 40); });
+  document.getElementById("fit").addEventListener("click", function () { fit(); });
+
+  var sc = RFV.qs("scope"); if (sc) st.scope = sc;
+  render();
+  fit(0.8);
+})();
+</script>
+</body>
+</html>
